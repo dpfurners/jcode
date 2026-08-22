@@ -543,27 +543,97 @@ impl PromotedCommandProgress {
 
 /// Collect a command's output stream line by line, reporting any parsed
 /// progress so a later background promotion has live progress instead of
-/// sitting at 0% until completion.
+/// sitting at 0% until completion. Each line is also appended to `tail` so a
+/// stdin request can show the user what the command printed last — which is
+/// the actual question ("Password:", "Overwrite? [y/N]") the input answers.
 async fn collect_output_reporting_progress<R>(
     reader: Option<R>,
     progress: std::sync::Arc<PromotedCommandProgress>,
+    tail: std::sync::Arc<OutputTail>,
 ) -> String
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut buf = String::new();
-    let Some(reader) = reader else {
+    let Some(mut reader) = reader else {
         return buf;
     };
-    let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Ok(Some(update)) = parse_progress_line(&line) {
-            progress.record(update).await;
+    // Raw chunk reads, not line reads: an interactive prompt ("Password: ")
+    // has no trailing newline, and a line reader would sit on it until EOF —
+    // showing the user an empty tail at exactly the moment they need the
+    // prompt text. Progress lines are still parsed on newline boundaries.
+    let mut chunk = [0u8; 4096];
+    let mut pending_line = String::new();
+    loop {
+        use tokio::io::AsyncReadExt as _;
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let text = String::from_utf8_lossy(&chunk[..n]);
+        tail.push(&text);
+        buf.push_str(&text);
+        pending_line.push_str(&text);
+        while let Some(pos) = pending_line.find('\n') {
+            let line: String = pending_line.drain(..=pos).collect();
+            if let Ok(Some(update)) = parse_progress_line(line.trim_end()) {
+                progress.record(update).await;
+            }
         }
-        buf.push_str(&line);
-        buf.push('\n');
+    }
+    if let Ok(Some(update)) = parse_progress_line(pending_line.trim_end()) {
+        progress.record(update).await;
     }
     buf
+}
+
+/// The last output a command wrote, shared between the output readers and
+/// the stdin detector. When the detector decides the command is waiting for
+/// input, this is the only place the actual question can come from.
+#[derive(Default)]
+struct OutputTail {
+    text: std::sync::Mutex<String>,
+}
+
+impl OutputTail {
+    /// Enough for a multi-line confirmation prompt; small enough that the
+    /// client can render it whole.
+    const MAX_BYTES: usize = 1500;
+    const PROMPT_LINES: usize = 5;
+
+    fn push(&self, chunk: &str) {
+        let mut text = self.text.lock().expect("output tail mutex poisoned");
+        text.push_str(chunk);
+        if text.len() > Self::MAX_BYTES {
+            let cut = text.len() - Self::MAX_BYTES;
+            // Cut on a char boundary; the tail is display text, not data.
+            let boundary = (cut..text.len())
+                .find(|i| text.is_char_boundary(*i))
+                .unwrap_or(0);
+            text.drain(..boundary);
+        }
+    }
+
+    /// The last few non-blank lines as prompt text.
+    fn prompt(&self) -> String {
+        let text = self.text.lock().expect("output tail mutex poisoned");
+        let mut lines: Vec<&str> = text
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(Self::PROMPT_LINES)
+            .collect();
+        lines.reverse();
+        lines.join("\n")
+    }
+}
+
+/// Whether a prompt is asking for a secret, so clients can mask the field.
+fn prompt_wants_password(prompt: &str) -> bool {
+    let last = prompt.lines().last().unwrap_or(prompt).to_lowercase();
+    ["password", "passphrase", "secret", "api key", "token:"]
+        .iter()
+        .any(|marker| last.contains(marker))
 }
 
 /// Tail a detached background task's output file and translate progress lines
@@ -958,6 +1028,12 @@ impl BashTool {
         let promoted_progress = std::sync::Arc::new(PromotedCommandProgress::default());
         let stdout_progress = std::sync::Arc::clone(&promoted_progress);
         let stderr_progress = std::sync::Arc::clone(&promoted_progress);
+        // Shared tail of recent output so a stdin request can carry the actual
+        // prompt the command printed instead of an empty string.
+        let output_tail = std::sync::Arc::new(OutputTail::default());
+        let stdout_tail = std::sync::Arc::clone(&output_tail);
+        let stderr_tail = std::sync::Arc::clone(&output_tail);
+        let stdin_tail = std::sync::Arc::clone(&output_tail);
 
         // Run the command (read stdout/stderr, service stdin, wait for exit) in a
         // dedicated task so that, if it exceeds the foreground timeout, we can hand
@@ -967,11 +1043,13 @@ impl BashTool {
                 let stdout_task = tokio::spawn(collect_output_reporting_progress(
                     stdout_handle,
                     stdout_progress,
+                    stdout_tail,
                 ));
 
                 let stderr_task = tokio::spawn(collect_output_reporting_progress(
                     stderr_handle,
                     stderr_progress,
+                    stderr_tail,
                 ));
 
                 let stdin_task = if has_stdin_channel {
@@ -993,10 +1071,17 @@ impl BashTool {
                                     let (response_tx, response_rx) =
                                         tokio::sync::oneshot::channel();
 
+                                    // The last output lines are the question the
+                                    // command asked ("Password:", "Proceed? [y/N]").
+                                    // Sending them is what lets a client show a
+                                    // real prompt instead of a bare input field.
+                                    let prompt = stdin_tail.prompt();
+                                    let is_password = prompt_wants_password(&prompt);
                                     let request = StdinInputRequest {
                                         request_id,
-                                        prompt: String::new(),
-                                        is_password: false,
+                                        prompt,
+                                        is_password,
+                                        tool_call_id: tool_call_id.clone(),
                                         response_tx,
                                     };
 

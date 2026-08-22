@@ -1,6 +1,7 @@
 mod agentgrep;
 pub mod ambient;
 mod apply_patch;
+mod ask_user;
 mod bash;
 mod batch;
 mod bg;
@@ -252,6 +253,7 @@ impl Registry {
             );
             Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
+            Self::insert_tool_timed(&mut m, &mut timings, "ask_user", ask_user::AskUserTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
             #[cfg(target_os = "macos")]

@@ -96,6 +96,9 @@ pub struct StdinInputRequest {
     pub request_id: String,
     pub prompt: String,
     pub is_password: bool,
+    /// The tool call this request belongs to, so clients can attribute the
+    /// prompt to the running tool instead of showing a bare input field.
+    pub tool_call_id: String,
     pub response_tx: tokio::sync::oneshot::Sender<String>,
 }
 

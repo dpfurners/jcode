@@ -1212,3 +1212,75 @@ async fn test_detached_promoted_command_reports_intermediate_progress() {
     let _ = tokio::fs::remove_file(output_file).await;
     let _ = tokio::fs::remove_file(status_file).await;
 }
+
+#[test]
+fn output_tail_keeps_the_prompt_and_detects_secrets() {
+    // A prompt with no trailing newline (the normal interactive shape) must be
+    // visible in the tail — that is the exact moment stdin detection fires.
+    let tail = OutputTail::default();
+    tail.push("Cloning repo...\n");
+    tail.push("remote: counting objects\n");
+    tail.push("Password: ");
+    assert_eq!(tail.prompt(), "Cloning repo...\nremote: counting objects\nPassword: ");
+    assert!(prompt_wants_password(&tail.prompt()));
+
+    // Only the last line decides masking: earlier chatter mentioning
+    // "password" must not mask a plain y/N confirmation.
+    let tail = OutputTail::default();
+    tail.push("password rules updated\n");
+    tail.push("Overwrite config? [y/N] ");
+    assert!(!prompt_wants_password(&tail.prompt()));
+
+    // The tail is bounded and keeps the newest output.
+    let tail = OutputTail::default();
+    for i in 0..2000 {
+        tail.push(&format!("line {i}\n"));
+    }
+    tail.push("Proceed? ");
+    let prompt = tail.prompt();
+    assert!(prompt.ends_with("Proceed? "), "newest output wins: {prompt}");
+    assert!(prompt.lines().count() <= OutputTail::PROMPT_LINES);
+
+    // Blank lines around the prompt are noise, not content.
+    let tail = OutputTail::default();
+    tail.push("Question:\n\n\n");
+    tail.push("continue? ");
+    assert_eq!(tail.prompt(), "Question:\ncontinue? ");
+}
+
+#[tokio::test]
+async fn stdin_request_carries_prompt_and_tool_call_id() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<StdinInputRequest>();
+    let tool = BashTool::new();
+
+    // Print a question without a newline, then block on stdin: the request
+    // must carry that question as its prompt and name the originating call.
+    let input = json!({
+        "command": "printf 'Which db? '; head -n1",
+        "timeout": 10000
+    });
+    let ctx = make_ctx(Some(tx));
+
+    let tool_handle = tokio::spawn(async move { tool.execute(input, ctx).await });
+
+    let req = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out waiting for stdin request")
+        .expect("channel closed");
+
+    assert_eq!(req.tool_call_id, "test-call");
+    assert!(
+        req.prompt.contains("Which db?"),
+        "prompt should carry the question the command printed, got: {:?}",
+        req.prompt
+    );
+    assert!(!req.is_password);
+
+    req.response_tx.send("postgres".to_string()).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), tool_handle)
+        .await
+        .expect("tool timed out")
+        .expect("tool panicked")
+        .expect("tool errored");
+    assert!(result.output.contains("postgres"));
+}
