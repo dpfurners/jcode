@@ -91,10 +91,11 @@ SHOT="$SHOT_DIR/board.png"
 xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1
 log "screenshot (board): $SHOT"
 
-# 8. Deep-link into the needs_you session on the first server: history +
+# 8. Deep-link into the needs_you session on work-mini (the smoke test already
+#    answered home-mini's prompt), matched by server name: history +
 #    replayed stdin_request render the inline prompt card.
 log "attaching via deep link"
-"$HARNESS/attach.sh" "$DEVICE" mock-session-0002
+"$HARNESS/attach.sh" "$DEVICE" mock-session-0002 work-mini
 sleep 4
 SHOT="$SHOT_DIR/chat.png"
 xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1

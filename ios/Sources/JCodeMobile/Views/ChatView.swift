@@ -41,6 +41,12 @@ struct ChatView: View {
                 onSuggestion: { model.draft = $0 }
             )
 
+            if let prompt = model.session.pendingPrompt {
+                PromptCard(prompt: prompt) { model.answerPrompt($0) }
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             if model.session.hasPendingInterrupts {
                 QueuedInterruptChip(count: model.session.pendingInterrupts.count) {
                     model.cancelQueuedInterrupts()
@@ -50,19 +56,24 @@ struct ChatView: View {
 
             Composer(
                 draft: $model.draft,
+                attachments: model.attachments,
                 isProcessing: model.session.isProcessing,
                 isConnected: model.isConnected,
                 onSend: {
                     sendCount += 1
                     model.sendDraft()
                 },
-                onInterrupt: { model.interrupt() }
+                onInterrupt: { model.interrupt() },
+                onAttach: { model.addAttachment($0) },
+                onRemoveAttachment: { model.removeAttachment($0) }
             )
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
+        .animation(.easeOut(duration: 0.2), value: model.session.pendingPrompt)
         .sensoryFeedback(.impact(weight: .light), trigger: sendCount)
+        .sensoryFeedback(.warning, trigger: model.session.pendingPrompt?.requestID) { $1 != nil }
         .sensoryFeedback(.impact(flexibility: .soft), trigger: finishedToolCallCount) {
             $1 > $0
         }

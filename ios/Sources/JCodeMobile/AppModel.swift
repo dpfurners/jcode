@@ -22,6 +22,8 @@ final class AppModel {
 
     /// Composer draft.
     var draft = ""
+    /// Images attached to the draft, already downscaled and encoded.
+    var attachments: [PendingImage] = []
 
     // MARK: - Internals
 
@@ -96,6 +98,7 @@ final class AppModel {
         activeServer = nil
         session = SessionState()
         draft = ""
+        attachments = []
     }
 
     /// Resolves a `jcode://` link. Returns false (and posts a board banner)
@@ -163,15 +166,33 @@ final class AppModel {
 
     func sendDraft() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let images = attachments.map(\.attachment)
+        guard !text.isEmpty || !images.isEmpty else { return }
         draft = ""
+        attachments = []
+        let shown = images.isEmpty ? text : text + " [\(images.count) image\(images.count == 1 ? "" : "s")]"
         if session.isProcessing {
-            session = SessionReducer.reduce(session, intent: .userQueuedInterrupt(text))
-            send { .softInterrupt(id: $0, content: text, urgent: false) }
+            session = SessionReducer.reduce(session, intent: .userQueuedInterrupt(shown))
+            send { .softInterrupt(id: $0, content: text, urgent: false, images: images) }
         } else {
-            session = SessionReducer.reduce(session, intent: .userSentMessage(text))
-            send { .message(id: $0, content: text) }
+            session = SessionReducer.reduce(session, intent: .userSentMessage(shown))
+            send { .message(id: $0, content: text, images: images) }
         }
+    }
+
+    /// Answers the pending `stdin_request` from the inline prompt card.
+    func answerPrompt(_ input: String) {
+        guard let prompt = session.pendingPrompt else { return }
+        session = SessionReducer.reduce(session, intent: .answeredPrompt(requestID: prompt.requestID))
+        send { .stdinResponse(id: $0, requestID: prompt.requestID, input: input) }
+    }
+
+    func addAttachment(_ image: PendingImage) {
+        attachments.append(image)
+    }
+
+    func removeAttachment(_ id: UUID) {
+        attachments.removeAll { $0.id == id }
     }
 
     func interrupt() {

@@ -1,17 +1,86 @@
+import PhotosUI
 import SwiftUI
 
-/// Message composer with send/interrupt.
+/// Message composer with attachments, send/interrupt.
 struct Composer: View {
     @Environment(\.compactEdgePads) private var edgePads
     @FocusState private var isFocused: Bool
     @Binding var draft: String
+    var attachments: [PendingImage] = []
     let isProcessing: Bool
     let isConnected: Bool
     let onSend: () -> Void
     let onInterrupt: () -> Void
+    var onAttach: ((PendingImage) -> Void)? = nil
+    var onRemoveAttachment: ((UUID) -> Void)? = nil
+
+    @State private var showCamera = false
+    @State private var showLibrary = false
+    @State private var pickedItems: [PhotosPickerItem] = []
 
     var body: some View {
+        VStack(spacing: 0) {
+            if !attachments.isEmpty {
+                AttachmentStrip(images: attachments) { onRemoveAttachment?($0) }
+                    .transition(.opacity)
+            }
+            row
+        }
+        .background(alignment: .top) {
+            ZStack(alignment: .top) {
+                Theme.background
+                Hairline()
+            }
+            .ignoresSafeArea(edges: .bottom)
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isProcessing)
+        .animation(.easeOut(duration: 0.15), value: attachments.count)
+        .photosPicker(isPresented: $showLibrary, selection: $pickedItems, maxSelectionCount: 4, matching: .images)
+        .onChange(of: pickedItems) { _, items in
+            guard !items.isEmpty else { return }
+            pickedItems = []
+            Task {
+                for item in items {
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                        let image = UIImage(data: data),
+                        let encoded = ImageEncoder.encode(image)
+                    {
+                        onAttach?(encoded)
+                    }
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { image in
+                if let encoded = ImageEncoder.encode(image) { onAttach?(encoded) }
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    private var row: some View {
         HStack(alignment: .bottom, spacing: 10) {
+            if onAttach != nil {
+                Menu {
+                    if CameraPicker.isAvailable {
+                        Button { showCamera = true } label: { Label("Camera", systemImage: "camera") }
+                    }
+                    Button { showLibrary = true } label: { Label("Photo library", systemImage: "photo.on.rectangle") }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 40, height: 40)
+                        .background(Theme.surface)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                }
+                .accessibilityLabel("Attach image")
+                .accessibilityHint("Camera or photo library")
+            }
+
             TextField(
                 isProcessing ? "Queue a message..." : "Message",
                 text: $draft,
@@ -76,17 +145,10 @@ struct Composer: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .padding(.bottom, edgePads.bottom)
-        .background(alignment: .top) {
-            ZStack(alignment: .top) {
-                Theme.background
-                Hairline()
-            }
-            .ignoresSafeArea(edges: .bottom)
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isProcessing)
     }
 
     private var canSend: Bool {
-        isConnected && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isConnected
+            && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 }

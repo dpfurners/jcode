@@ -17,6 +17,8 @@ to evaluate everything that can be checked locally.
 | 8 | Unauthorized (revoked token) stops reconnect loop, prompts re-pair | `unauthorizedStopsReconnectingAndAsksForRePair` test | PASS |
 | 8a | Board ranking + unreachable grouping | `boardRanks*` / `boardExcludesUnreachable*` tests | PASS |
 | 8b | Board poll never subscribes | `probeListsSessionsWithoutSubscribing` test + smoke "did not create a session" | PASS |
+| 8d | Pending prompt card renders + answers via `stdin_response` | reducer `stdinRequest*`/`answeringPrompt*` tests; `chat.png` shows "Needs your input" | PASS |
+| 8e | Image attach (camera/library) sends `[mime, base64]` on `message`/`soft_interrupt` | `encodesImagesAsMimeBase64Pairs` test; picker flow UNVERIFIED on simulator (no camera) | PARTIAL |
 | 8c | Deep links `jcode://board`, `jcode://session?host=&id=` | `deepLink*` tests; `attach.sh` in run_e2e | PASS |
 
 ## App Store submission requirements
