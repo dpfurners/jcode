@@ -545,3 +545,67 @@ private func event(_ line: String) -> ConnectionOutput {
     #expect(state.errorBanner == "taken over by TUI")
     #expect(state.transcript.last?.isStreaming == false)
 }
+
+// MARK: - Pending prompt (stdin_request) lifecycle
+
+private let promptLine =
+    #"{"type":"stdin_request","request_id":"r1","prompt":"Password: ","is_password":true,"tool_call_id":"t1"}"#
+
+@Test func stdinRequestSetsPendingPromptAndMarksProcessing() {
+    let state = run([.phase(.connected), event(promptLine)])
+    #expect(state.pendingPrompt?.requestID == "r1")
+    #expect(state.pendingPrompt?.isPassword == true)
+    #expect(state.isProcessing)
+}
+
+@Test func answeringPromptClearsIt() {
+    var state = run([event(promptLine)])
+    state = SessionReducer.reduce(state, intent: .answeredPrompt(requestID: "other"))
+    #expect(state.pendingPrompt != nil)
+    state = SessionReducer.reduce(state, intent: .answeredPrompt(requestID: "r1"))
+    #expect(state.pendingPrompt == nil)
+}
+
+@Test func stdinResolvedFromAnotherClientClearsPrompt() {
+    var state = run([event(promptLine)])
+    state = run([event(#"{"type":"stdin_resolved","request_id":"zzz"}"#)], from: state)
+    #expect(state.pendingPrompt != nil)
+    state = run([event(#"{"type":"stdin_resolved","request_id":"r1"}"#)], from: state)
+    #expect(state.pendingPrompt == nil)
+}
+
+@Test func turnEndClearsPendingPrompt() {
+    for terminal in [
+        #"{"type":"done","id":1}"#,
+        #"{"type":"interrupted"}"#,
+        #"{"type":"error","id":1,"message":"boom"}"#,
+        #"{"type":"session_close_requested","reason":"gone"}"#,
+    ] {
+        let state = run([event(promptLine), event(terminal)])
+        #expect(state.pendingPrompt == nil, "\(terminal)")
+    }
+}
+
+@Test func disconnectDropsPromptUntilServerReplaysIt() {
+    var state = run([.phase(.connected), event(promptLine)])
+    state = run([.phase(.reconnecting(attempt: 1))], from: state)
+    #expect(state.pendingPrompt == nil)
+    // The server replays the request after resubscribe.
+    state = run([.phase(.connected), event(promptLine)], from: state)
+    #expect(state.pendingPrompt?.requestID == "r1")
+}
+
+@Test func historySetsSkillsAndBoardEventsAreInert() {
+    var state = run([
+        event(#"{"type":"history","id":1,"session_id":"s","messages":[],"skills":["grill-me"]}"#)
+    ])
+    #expect(state.skills == ["grill-me"])
+    let before = state
+    state = run(
+        [
+            event(#"{"type":"sessions","id":2,"sessions":[],"recent_projects":[]}"#),
+            event(#"{"type":"session_closed","id":3,"session_id":"x","deleted":true}"#),
+            event(#"{"type":"file_matches","id":4,"query":"q","matches":[]}"#),
+        ], from: state)
+    #expect(state == before)
+}

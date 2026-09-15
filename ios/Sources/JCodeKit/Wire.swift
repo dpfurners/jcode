@@ -6,10 +6,16 @@ import Foundation
 /// snake_case tags). Only the requests the iOS app uses are modeled; the server
 /// ignores fields it does not expect.
 public enum Request: Equatable, Sendable {
-    case subscribe(id: UInt64, targetSessionID: String?)
-    case message(id: UInt64, content: String)
+    /// `working_dir` opens a fresh session in that directory when no target is
+    /// given. `allow_session_takeover` stays false for the phone: it attaches
+    /// alongside other clients instead of evicting them.
+    case subscribe(
+        id: UInt64, targetSessionID: String?, workingDir: String? = nil,
+        allowSessionTakeover: Bool = false)
+    case message(
+        id: UInt64, content: String, images: [ImageAttachment] = [], activeSkill: String? = nil)
     case cancel(id: UInt64)
-    case softInterrupt(id: UInt64, content: String, urgent: Bool)
+    case softInterrupt(id: UInt64, content: String, urgent: Bool, images: [ImageAttachment] = [])
     case cancelSoftInterrupts(id: UInt64)
     case ping(id: UInt64)
     case getHistory(id: UInt64)
@@ -19,14 +25,27 @@ public enum Request: Equatable, Sendable {
     case compact(id: UInt64)
     case renameSession(id: UInt64, title: String?)
     case clear(id: UInt64)
+    /// Board poll; allowed before `subscribe` (see docs/PHONE-WIRE.md).
+    case listSessions(id: UInt64, limit: Int = 100, includeWorkers: Bool = false)
+    /// Stop (and optionally delete) any session on the server.
+    case closeSession(id: UInt64, sessionID: String, delete: Bool)
+    /// Server-side path search: fuzzy relative to `workingDir`, or absolute
+    /// prefix completion when `query` starts with "/".
+    case searchFiles(
+        id: UInt64, query: String, limit: Int = 30, dirsOnly: Bool = false,
+        workingDir: String? = nil)
+    /// Answers a `stdin_request` from a running tool.
+    case stdinResponse(id: UInt64, requestID: String, input: String)
 
     public var id: UInt64 {
         switch self {
-        case let .subscribe(id, _), let .message(id, _), let .cancel(id),
-            let .softInterrupt(id, _, _), let .cancelSoftInterrupts(id),
+        case let .subscribe(id, _, _, _), let .message(id, _, _, _), let .cancel(id),
+            let .softInterrupt(id, _, _, _), let .cancelSoftInterrupts(id),
             let .ping(id), let .getHistory(id), let .resumeSession(id, _),
             let .setModel(id, _), let .setReasoningEffort(id, _), let .compact(id),
-            let .renameSession(id, _), let .clear(id):
+            let .renameSession(id, _), let .clear(id), let .listSessions(id, _, _),
+            let .closeSession(id, _, _), let .searchFiles(id, _, _, _, _),
+            let .stdinResponse(id, _, _):
             return id
         }
     }
@@ -35,20 +54,35 @@ public enum Request: Equatable, Sendable {
     public func encodedLine() throws -> String {
         var object: [String: Any] = ["id": id]
         switch self {
-        case let .subscribe(_, targetSessionID):
+        case let .subscribe(_, targetSessionID, workingDir, allowTakeover):
             object["type"] = "subscribe"
             if let targetSessionID {
                 object["target_session_id"] = targetSessionID
             }
-        case let .message(_, content):
+            if let workingDir {
+                object["working_dir"] = workingDir
+            }
+            if allowTakeover {
+                object["allow_session_takeover"] = true
+            }
+        case let .message(_, content, images, activeSkill):
             object["type"] = "message"
             object["content"] = content
+            if !images.isEmpty {
+                object["images"] = images.map(\.wireValue)
+            }
+            if let activeSkill {
+                object["active_skill"] = activeSkill
+            }
         case .cancel:
             object["type"] = "cancel"
-        case let .softInterrupt(_, content, urgent):
+        case let .softInterrupt(_, content, urgent, images):
             object["type"] = "soft_interrupt"
             object["content"] = content
             object["urgent"] = urgent
+            if !images.isEmpty {
+                object["images"] = images.map(\.wireValue)
+            }
         case .cancelSoftInterrupts:
             object["type"] = "cancel_soft_interrupts"
         case .ping:
@@ -73,12 +107,216 @@ public enum Request: Equatable, Sendable {
             }
         case .clear:
             object["type"] = "clear"
+        case let .listSessions(_, limit, includeWorkers):
+            object["type"] = "list_sessions"
+            object["limit"] = limit
+            object["include_workers"] = includeWorkers
+        case let .closeSession(_, sessionID, delete):
+            object["type"] = "close_session"
+            object["session_id"] = sessionID
+            object["delete"] = delete
+        case let .searchFiles(_, query, limit, dirsOnly, workingDir):
+            object["type"] = "search_files"
+            object["query"] = query
+            object["limit"] = limit
+            object["dirs_only"] = dirsOnly
+            object["working_dir"] = workingDir ?? NSNull()
+        case let .stdinResponse(_, requestID, input):
+            object["type"] = "stdin_response"
+            object["request_id"] = requestID
+            object["input"] = input
         }
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         guard let line = String(data: data, encoding: .utf8) else {
             throw WireError.encodingFailed
         }
         return line
+    }
+}
+
+/// An inline image on `message` / `soft_interrupt`. The Rust wire encodes
+/// `images: Vec<(String, String)>` as `[[mime, base64], ...]`.
+public struct ImageAttachment: Equatable, Sendable, Hashable {
+    public var mimeType: String
+    public var base64: String
+
+    public init(mimeType: String, base64: String) {
+        self.mimeType = mimeType
+        self.base64 = base64
+    }
+
+    var wireValue: [String] { [mimeType, base64] }
+}
+
+/// A running tool is blocked on interactive input (`stdin_request`).
+public struct PendingPrompt: Equatable, Sendable {
+    public var requestID: String
+    public var prompt: String
+    public var isPassword: Bool
+    public var toolCallID: String?
+
+    public init(requestID: String, prompt: String, isPassword: Bool, toolCallID: String?) {
+        self.requestID = requestID
+        self.prompt = prompt
+        self.isPassword = isPassword
+        self.toolCallID = toolCallID
+    }
+}
+
+/// One row of a `sessions` reply (the board tier). Timestamps stay as the
+/// server's RFC 3339 strings so they round-trip byte-for-byte into the sync
+/// dump; use `date(_:)` to compare them.
+public struct SessionSummary: Equatable, Sendable, Identifiable {
+    public enum Phase: String, Sendable, Comparable {
+        case idle
+        case running
+        case failed
+        case needsYou = "needs_you"
+
+        /// Board ranking: needs_you > failed > running > idle.
+        public var rank: Int {
+            switch self {
+            case .needsYou: 3
+            case .failed: 2
+            case .running: 1
+            case .idle: 0
+            }
+        }
+
+        public static func < (lhs: Phase, rhs: Phase) -> Bool { lhs.rank < rhs.rank }
+    }
+
+    public struct Preview: Equatable, Sendable {
+        public var kind: String
+        public var text: String
+
+        public init(kind: String, text: String) {
+            self.kind = kind
+            self.text = text
+        }
+    }
+
+    public var id: String
+    public var shortName: String
+    public var title: String?
+    public var workingDir: String?
+    public var createdAt: String?
+    public var updatedAt: String?
+    public var lastActiveAt: String?
+    public var model: String?
+    public var provider: String?
+    public var phase: Phase
+    public var reason: String?
+    public var currentTool: String?
+    public var turnStartedAt: String?
+    public var queued: Int
+    public var pendingPrompt: PendingPrompt?
+    public var preview: Preview?
+    public var clientCount: Int
+    public var isLive: Bool
+    public var parentID: String?
+    public var swarmRole: String?
+
+    public init(
+        id: String, shortName: String = "", title: String? = nil, workingDir: String? = nil,
+        createdAt: String? = nil, updatedAt: String? = nil, lastActiveAt: String? = nil,
+        model: String? = nil, provider: String? = nil, phase: Phase = .idle,
+        reason: String? = nil, currentTool: String? = nil, turnStartedAt: String? = nil,
+        queued: Int = 0, pendingPrompt: PendingPrompt? = nil, preview: Preview? = nil,
+        clientCount: Int = 0, isLive: Bool = false, parentID: String? = nil,
+        swarmRole: String? = nil
+    ) {
+        self.id = id
+        self.shortName = shortName
+        self.title = title
+        self.workingDir = workingDir
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastActiveAt = lastActiveAt
+        self.model = model
+        self.provider = provider
+        self.phase = phase
+        self.reason = reason
+        self.currentTool = currentTool
+        self.turnStartedAt = turnStartedAt
+        self.queued = queued
+        self.pendingPrompt = pendingPrompt
+        self.preview = preview
+        self.clientCount = clientCount
+        self.isLive = isLive
+        self.parentID = parentID
+        self.swarmRole = swarmRole
+    }
+
+    /// Row label: custom/auto title, else the short name, else the id.
+    public var displayTitle: String {
+        if let title, !title.isEmpty { return title }
+        if !shortName.isEmpty { return shortName }
+        return id
+    }
+
+    public var updatedAtDate: Date? { Self.date(updatedAt) }
+    public var turnStartedAtDate: Date? { Self.date(turnStartedAt) }
+
+    /// Parses RFC 3339 with or without fractional seconds.
+    public static func date(_ string: String?) -> Date? {
+        guard let string else { return nil }
+        if let date = try? Date(string, strategy: .iso8601.year().month().day()
+            .dateTimeSeparator(.standard).time(includingFractionalSeconds: true))
+        {
+            return date
+        }
+        return try? Date(string, strategy: .iso8601)
+    }
+}
+
+/// A project directory the server has seen recently (`sessions.recent_projects`).
+/// The server lists `[phone] pinned_projects` first, so order is meaningful.
+public struct RecentProject: Equatable, Sendable, Identifiable {
+    public var id: String { path }
+    public var path: String
+    public var lastUsedAt: String?
+    public var sessionCount: Int
+
+    public init(path: String, lastUsedAt: String? = nil, sessionCount: Int = 0) {
+        self.path = path
+        self.lastUsedAt = lastUsedAt
+        self.sessionCount = sessionCount
+    }
+}
+
+/// Reply to `list_sessions`.
+public struct SessionsPayload: Equatable, Sendable {
+    public var id: UInt64
+    public var serverName: String?
+    public var serverIcon: String?
+    public var serverVersion: String?
+    public var sessions: [SessionSummary]
+    public var recentProjects: [RecentProject]
+
+    public init(
+        id: UInt64, serverName: String? = nil, serverIcon: String? = nil,
+        serverVersion: String? = nil, sessions: [SessionSummary] = [],
+        recentProjects: [RecentProject] = []
+    ) {
+        self.id = id
+        self.serverName = serverName
+        self.serverIcon = serverIcon
+        self.serverVersion = serverVersion
+        self.sessions = sessions
+        self.recentProjects = recentProjects
+    }
+}
+
+/// One hit of `search_files` (`file_matches`).
+public struct FileMatch: Equatable, Sendable, Identifiable {
+    public var id: String { path }
+    public var path: String
+    public var isDir: Bool
+
+    public init(path: String, isDir: Bool) {
+        self.path = path
+        self.isDir = isDir
     }
 }
 
@@ -150,6 +388,12 @@ public enum ServerEvent: Equatable, Sendable {
     case notification(fromName: String?, message: String)
     case reloading(newSocket: String?)
     case sessionCloseRequested(reason: String)
+    case stdinRequest(PendingPrompt)
+    /// Another client answered the prompt; close the local prompt UI.
+    case stdinResolved(requestID: String)
+    case sessions(SessionsPayload)
+    case sessionClosed(id: UInt64, sessionID: String, deleted: Bool)
+    case fileMatches(id: UInt64, query: String, matches: [FileMatch])
     case unknown(type: String)
 
     public struct HistoryPayload: Equatable, Sendable {
@@ -164,6 +408,8 @@ public enum ServerEvent: Equatable, Sendable {
         public var serverVersion: String?
         public var displayTitle: String?
         public var reasoningEffort: String?
+        /// Installed skill names, for `/` completion.
+        public var skills: [String]
 
         public struct TokenTotals: Equatable, Sendable {
             public var input: UInt64
@@ -186,7 +432,8 @@ public enum ServerEvent: Equatable, Sendable {
             allSessions: [String] = [],
             serverVersion: String? = nil,
             displayTitle: String? = nil,
-            reasoningEffort: String? = nil
+            reasoningEffort: String? = nil,
+            skills: [String] = []
         ) {
             self.id = id
             self.sessionID = sessionID
@@ -199,6 +446,7 @@ public enum ServerEvent: Equatable, Sendable {
             self.serverVersion = serverVersion
             self.displayTitle = displayTitle
             self.reasoningEffort = reasoningEffort
+            self.skills = skills
         }
     }
 
@@ -320,6 +568,26 @@ public enum ServerEvent: Equatable, Sendable {
             return .reloading(newSocket: json.optionalString("new_socket"))
         case "session_close_requested":
             return .sessionCloseRequested(reason: json.string("reason"))
+        case "stdin_request":
+            return .stdinRequest(decodePrompt(json))
+        case "stdin_resolved":
+            return .stdinResolved(requestID: json.string("request_id"))
+        case "sessions":
+            return .sessions(decodeSessions(json))
+        case "session_closed":
+            return .sessionClosed(
+                id: json.uint64("id"),
+                sessionID: json.string("session_id"),
+                deleted: json.bool("deleted")
+            )
+        case "file_matches":
+            return .fileMatches(
+                id: json.uint64("id"),
+                query: json.string("query"),
+                matches: json.objectArray("matches").map {
+                    FileMatch(path: $0.string("path"), isDir: $0.bool("is_dir"))
+                }
+            )
         default:
             return .unknown(type: type)
         }
@@ -362,7 +630,61 @@ public enum ServerEvent: Equatable, Sendable {
             allSessions: json.stringArray("all_sessions"),
             serverVersion: json.optionalString("server_version"),
             displayTitle: json.optionalString("display_title"),
-            reasoningEffort: json.optionalString("reasoning_effort")
+            reasoningEffort: json.optionalString("reasoning_effort"),
+            skills: json.stringArray("skills")
+        )
+    }
+
+    private static func decodePrompt(_ json: JSONObject) -> PendingPrompt {
+        PendingPrompt(
+            requestID: json.string("request_id"),
+            prompt: json.string("prompt"),
+            isPassword: json.bool("is_password"),
+            toolCallID: json.optionalString("tool_call_id")
+        )
+    }
+
+    private static func decodeSessions(_ json: JSONObject) -> SessionsPayload {
+        let sessions = json.objectArray("sessions").map { row -> SessionSummary in
+            SessionSummary(
+                id: row.string("id"),
+                shortName: row.string("short_name"),
+                title: row.optionalString("title"),
+                workingDir: row.optionalString("working_dir"),
+                createdAt: row.optionalString("created_at"),
+                updatedAt: row.optionalString("updated_at"),
+                lastActiveAt: row.optionalString("last_active_at"),
+                model: row.optionalString("model"),
+                provider: row.optionalString("provider"),
+                phase: SessionSummary.Phase(rawValue: row.string("phase")) ?? .idle,
+                reason: row.optionalString("reason"),
+                currentTool: row.optionalString("current_tool"),
+                turnStartedAt: row.optionalString("turn_started_at"),
+                queued: row.int("queued"),
+                pendingPrompt: row.optionalObject("pending_prompt").map(decodePrompt),
+                preview: row.optionalObject("preview").map {
+                    SessionSummary.Preview(kind: $0.string("kind"), text: $0.string("text"))
+                },
+                clientCount: row.int("client_count"),
+                isLive: row.bool("is_live"),
+                parentID: row.optionalString("parent_id"),
+                swarmRole: row.optionalString("swarm_role")
+            )
+        }
+        let projects = json.objectArray("recent_projects").map { row in
+            RecentProject(
+                path: row.string("path"),
+                lastUsedAt: row.optionalString("last_used_at"),
+                sessionCount: row.int("session_count")
+            )
+        }
+        return SessionsPayload(
+            id: json.uint64("id"),
+            serverName: json.optionalString("server_name"),
+            serverIcon: json.optionalString("server_icon"),
+            serverVersion: json.optionalString("server_version"),
+            sessions: sessions,
+            recentProjects: projects
         )
     }
 }

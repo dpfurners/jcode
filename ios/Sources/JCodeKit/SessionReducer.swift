@@ -113,6 +113,11 @@ public struct SessionState: Equatable, Sendable {
     /// Soft-interrupt messages queued mid-run, in send order, until the
     /// server confirms injection.
     public var pendingInterrupts: [String]
+    /// A running tool is waiting on the user (`stdin_request`). Cleared when
+    /// this or another client answers it, or when the turn ends.
+    public var pendingPrompt: PendingPrompt?
+    /// Installed skill names from the history payload, for `/` completion.
+    public var skills: [String]
 
     public var hasPendingInterrupts: Bool { !pendingInterrupts.isEmpty }
 
@@ -142,6 +147,8 @@ public struct SessionState: Equatable, Sendable {
         errorBanner = nil
         notices = []
         pendingInterrupts = []
+        pendingPrompt = nil
+        skills = []
     }
 }
 
@@ -154,6 +161,8 @@ public enum LocalIntent: Equatable, Sendable {
     /// User cancelled all queued soft-interrupts before they injected; the
     /// optimistic bubbles are removed because they will never reach the agent.
     case cancelledQueuedInterrupts
+    /// User answered the pending prompt (`stdin_response` was sent).
+    case answeredPrompt(requestID: String)
     /// Dismiss the current error banner.
     case dismissError
     /// Dismiss a transient notice by id.
@@ -192,6 +201,10 @@ public enum SessionReducer {
         case .cancelledQueuedInterrupts:
             state.transcript.removeAll { $0.isQueued }
             state.pendingInterrupts = []
+        case .answeredPrompt(let requestID):
+            if state.pendingPrompt?.requestID == requestID {
+                state.pendingPrompt = nil
+            }
         case .dismissError:
             state.errorBanner = nil
         case .dismissNotice(let id):
@@ -225,6 +238,8 @@ public enum SessionReducer {
             state.isProcessing = false
             state.isReasoning = false
             state.serverPhase = nil
+            // The server replays a still-pending prompt after resubscribe.
+            state.pendingPrompt = nil
             finishStreaming(&state)
         case .connecting:
             break
@@ -307,6 +322,7 @@ public enum SessionReducer {
             state.isProcessing = false
             state.isReasoning = false
             state.serverPhase = nil
+            state.pendingPrompt = nil
             finishStreaming(&state)
             drainPendingInterrupts(&state)
 
@@ -314,6 +330,7 @@ public enum SessionReducer {
             state.isProcessing = false
             state.isReasoning = false
             state.serverPhase = nil
+            state.pendingPrompt = nil
             finishStreaming(&state)
             drainPendingInterrupts(&state)
             state.notices.append(Notice(message: "Interrupted"))
@@ -322,6 +339,7 @@ public enum SessionReducer {
             state.isProcessing = false
             state.isReasoning = false
             state.serverPhase = nil
+            state.pendingPrompt = nil
             finishStreaming(&state)
             if let retry = retryAfterSecs {
                 state.errorBanner = "\(message) (retry in \(retry)s)"
@@ -395,10 +413,24 @@ public enum SessionReducer {
         case .sessionCloseRequested(let reason):
             state.isProcessing = false
             state.isReasoning = false
+            state.pendingPrompt = nil
             finishStreaming(&state)
             state.errorBanner = reason.isEmpty ? "Server closed this session" : reason
 
-        case .ack, .pong, .unknown:
+        case .stdinRequest(let prompt):
+            // A tool blocked on input means the turn is live even if no
+            // `state` event said so (replay after attach).
+            state.pendingPrompt = prompt
+            state.isProcessing = true
+
+        case .stdinResolved(let requestID):
+            if state.pendingPrompt?.requestID == requestID {
+                state.pendingPrompt = nil
+            }
+
+        case .ack, .pong, .unknown, .sessions, .sessionClosed, .fileMatches:
+            // Board/search replies are consumed by their requesters, not the
+            // attached-session state.
             break
         }
         return state
@@ -420,6 +452,9 @@ public enum SessionReducer {
         state.serverVersion = payload.serverVersion ?? state.serverVersion
         state.sessionTitle = payload.displayTitle ?? state.sessionTitle
         state.reasoningEffort = payload.reasoningEffort ?? state.reasoningEffort
+        if !payload.skills.isEmpty {
+            state.skills = payload.skills
+        }
         if let title = payload.displayTitle {
             state.sessionTitles[payload.sessionID] = title
         }
