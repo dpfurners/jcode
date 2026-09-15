@@ -13,6 +13,8 @@ struct Composer: View {
     let onInterrupt: () -> Void
     var onAttach: ((PendingImage) -> Void)? = nil
     var onRemoveAttachment: ((UUID) -> Void)? = nil
+    var completion = CompletionState()
+    var onAcceptCompletion: ((String) -> Void)? = nil
 
     @State private var showCamera = false
     @State private var showLibrary = false
@@ -20,6 +22,10 @@ struct Composer: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if completion.kind != .none, !completion.rows.isEmpty {
+                CompletionPopup(state: completion) { onAcceptCompletion?($0) }
+                    .transition(.opacity)
+            }
             if !attachments.isEmpty {
                 AttachmentStrip(images: attachments) { onRemoveAttachment?($0) }
                     .transition(.opacity)
@@ -35,6 +41,7 @@ struct Composer: View {
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isProcessing)
         .animation(.easeOut(duration: 0.15), value: attachments.count)
+        .animation(.easeOut(duration: 0.12), value: completion.rows.isEmpty)
         .photosPicker(isPresented: $showLibrary, selection: $pickedItems, maxSelectionCount: 4, matching: .images)
         .onChange(of: pickedItems) { _, items in
             guard !items.isEmpty else { return }

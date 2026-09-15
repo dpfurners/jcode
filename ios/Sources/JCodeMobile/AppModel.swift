@@ -20,8 +20,12 @@ final class AppModel {
     private(set) var isAttached = false
     let board = BoardModel()
 
-    /// Composer draft.
-    var draft = ""
+    /// Composer draft. Setting it recomputes the completion popup.
+    var draft = "" {
+        didSet { if draft != oldValue { updateCompletion() } }
+    }
+    /// What the completion popup shows for the current draft.
+    private(set) var completion = CompletionState()
     /// Images attached to the draft, already downscaled and encoded.
     var attachments: [PendingImage] = []
 
@@ -30,6 +34,7 @@ final class AppModel {
     private let store: any CredentialStore
     private var connection: Connection?
     private var pumpTask: Task<Void, Never>?
+    private var fileSearchTask: Task<Void, Never>?
 
     init(store: any CredentialStore = KeychainCredentialStore()) {
         self.store = store
@@ -99,6 +104,8 @@ final class AppModel {
         session = SessionState()
         draft = ""
         attachments = []
+        fileSearchTask?.cancel()
+        completion = CompletionState()
     }
 
     /// Resolves a `jcode://` link. Returns false (and posts a board banner)
@@ -149,6 +156,9 @@ final class AppModel {
             for await output in stream {
                 guard let self else { return }
                 self.session = SessionReducer.reduce(self.session, output)
+                if case .event(let event) = output {
+                    self.consumeFileMatches(event)
+                }
             }
         }
     }
@@ -175,9 +185,59 @@ final class AppModel {
             session = SessionReducer.reduce(session, intent: .userQueuedInterrupt(shown))
             send { .softInterrupt(id: $0, content: text, urgent: false, images: images) }
         } else {
+            let skill = Completion.activeSkill(in: text, skills: session.skills)
             session = SessionReducer.reduce(session, intent: .userSentMessage(shown))
-            send { .message(id: $0, content: text, images: images) }
+            send { .message(id: $0, content: text, images: images, activeSkill: skill) }
         }
+    }
+
+    // MARK: - Composer completion
+
+    /// Inserts the tapped row into the draft in place of the token.
+    func acceptCompletion(_ row: String) {
+        guard let token = Completion.token(in: draft) else { return }
+        draft = Completion.apply(token, replacement: row, to: draft)
+    }
+
+    private func updateCompletion() {
+        fileSearchTask?.cancel()
+        guard let token = Completion.token(in: draft) else {
+            completion = CompletionState()
+            return
+        }
+        switch token.kind {
+        case .slash:
+            completion = CompletionState(
+                kind: .slash, query: token.query,
+                rows: Completion.slashRows(skills: session.skills, query: token.query))
+        case .file:
+            // Keep stale rows while the next search is in flight so the popup
+            // does not flicker; one request per token change after 300 ms.
+            completion = CompletionState(
+                kind: .file, query: token.query,
+                rows: completion.kind == .file ? completion.rows : [])
+            let query = token.query
+            fileSearchTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, let self, let connection = self.connection else { return }
+                let requestID = try? await connection.send {
+                    .searchFiles(id: $0, query: query, limit: 30, dirsOnly: false, workingDir: nil)
+                }
+                self.pendingFileSearch = (requestID, query)
+            }
+        }
+    }
+
+    /// The in-flight `search_files` request whose `file_matches` reply
+    /// feeds the popup. Older replies are ignored.
+    private var pendingFileSearch: (id: UInt64?, query: String)?
+
+    private func consumeFileMatches(_ event: ServerEvent) {
+        guard case let .fileMatches(id, query, matches) = event,
+            let pending = pendingFileSearch, pending.id == id,
+            completion.kind == .file, completion.query == query
+        else { return }
+        completion.rows = matches.map(\.path)
     }
 
     /// Answers the pending `stdin_request` from the inline prompt card.
@@ -263,4 +323,14 @@ final class AppModel {
         UserDefaults.standard.set(fresh, forKey: key)
         return fresh
     }
+}
+
+/// Rows for the composer completion popup.
+struct CompletionState: Equatable {
+    enum Kind: String { case none, slash, file }
+    var kind: Kind = .none
+    var query = ""
+    /// Slash: command/skill names without the sigil. File: relative paths
+    /// exactly as they will be inserted.
+    var rows: [String] = []
 }

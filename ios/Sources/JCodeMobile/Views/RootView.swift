@@ -46,6 +46,9 @@ struct RootView: View {
 extension RootView {
     /// Every `jcode://` URL, whether from SpringBoard or the debug channel.
     fileprivate func handle(_ url: URL) {
+        #if DEBUG
+        if DebugURLChannel.handleDebugAction(url, model: model) { return }
+        #endif
         if let link = DeepLink.parse(url.absoluteString) {
             model.open(deepLink: link)
             return

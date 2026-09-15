@@ -34,6 +34,13 @@ built against on this machine, without a device, network, or provider cost.
   - `attach.sh <device> <session_id> [host]` opens
     `jcode://session?host=<host>&id=<session_id>` (host defaults to
     `127.0.0.1`, matched against the seeded server's literal host).
+  - `answer_prompt.sh <device> <request_id> <text>` answers the pending
+    prompt via `jcode://debug/answer?request_id=…&text=…` (DEBUG only), the
+    same `stdin_response` path as the prompt card's Send. An empty
+    `request_id` skips the id check.
+  - `type_composer.sh <device> <text>` sets the composer draft via
+    `jcode://debug/compose?text=…` (DEBUG only) so the completion popup
+    computes: `/c` opens the slash list, `@comp` runs one `search_files`.
   - `debug_url.sh <device> <url>` delivers any `jcode://` URL to a DEBUG
     build without SpringBoard's "Open in jcode?" sheet: it appends to
     `<container>/tmp/jcode-debug-url`, which the app polls every 250 ms and

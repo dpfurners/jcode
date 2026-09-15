@@ -100,5 +100,20 @@ sleep 4
 SHOT="$SHOT_DIR/chat.png"
 xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1
 log "screenshot (attached, pending prompt): $SHOT"
+
+# 9. Composer completion: "/c" opens the slash popup (skills + builtins),
+#    then "@comp" runs one search_files against the attached session.
+log "composer completion"
+"$HARNESS/type_composer.sh" "$DEVICE" "/c"
+sleep 1.5
+SHOT="$SHOT_DIR/slash.png"
+xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1
+log "screenshot (slash completion): $SHOT"
+"$HARNESS/type_composer.sh" "$DEVICE" "look at @comp"
+sleep 1.5
+SHOT="$SHOT_DIR/file.png"
+xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1
+log "screenshot (file completion): $SHOT"
+"$HARNESS/type_composer.sh" "$DEVICE" ""
 log "gateway logs: $SHOT_DIR/mockgw.log $SHOT_DIR/mockgw2.log"
 log "done"

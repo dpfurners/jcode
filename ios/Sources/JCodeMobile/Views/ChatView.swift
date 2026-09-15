@@ -65,7 +65,9 @@ struct ChatView: View {
                 },
                 onInterrupt: { model.interrupt() },
                 onAttach: { model.addAttachment($0) },
-                onRemoveAttachment: { model.removeAttachment($0) }
+                onRemoveAttachment: { model.removeAttachment($0) },
+                completion: model.completion,
+                onAcceptCompletion: { model.acceptCompletion($0) }
             )
         }
         .sheet(isPresented: $showSettings) {
