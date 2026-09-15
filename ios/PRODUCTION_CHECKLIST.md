@@ -20,6 +20,7 @@ to evaluate everything that can be checked locally.
 | 8d | Pending prompt card renders + answers via `stdin_response` | reducer `stdinRequest*`/`answeringPrompt*` tests; `chat.png` shows "Needs your input" | PASS |
 | 8e | Image attach (camera/library) sends `[mime, base64]` on `message`/`soft_interrupt` | `encodesImagesAsMimeBase64Pairs` test; picker flow UNVERIFIED on simulator (no camera) | PARTIAL |
 | 8f | `/` and `@` completion popups | `Completion*` tests; `slash.png` + `file.png` from run_e2e; one `search_files` per token change in mockgw2.log | PASS |
+| 8f | Composer completion: `/` skills+builtins, `@` one `search_files` per token (300 ms) | `completion*` tests; `slash.png` / `file.png` | PASS |
 | 8c | Deep links `jcode://board`, `jcode://session?host=&id=` | `deepLink*` tests; `attach.sh` in run_e2e | PASS |
 
 ## App Store submission requirements

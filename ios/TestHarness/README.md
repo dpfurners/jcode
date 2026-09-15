@@ -47,6 +47,13 @@ built against on this machine, without a device, network, or provider cost.
     routes through the same handler as `onOpenURL`. Release builds do not
     compile the poller. `JCODE_USE_OPENURL=1 attach.sh …` uses `simctl
     openurl` instead (interactive).
+  - `answer_prompt.sh <device> <request_id> <text>` answers the pending
+    prompt via `jcode://debug/answer?request_id=…&text=…` (DEBUG only), the
+    same `stdin_response` path as the prompt card's Send. An empty
+    request_id skips the id check.
+  - `type_composer.sh <device> <text>` sets the composer draft via
+    `jcode://debug/compose?text=…` (DEBUG only), so `/…` and `@…` open the
+    completion popup exactly as if typed.
 
 ## Usage
 
