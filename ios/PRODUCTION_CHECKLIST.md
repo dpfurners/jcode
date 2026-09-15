@@ -8,13 +8,16 @@ to evaluate everything that can be checked locally.
 | # | Item | Pass condition | Status |
 |---|------|----------------|--------|
 | 1 | JCodeKit unit tests | `cd ios && swift test` exit 0 | PASS |
-| 2 | E2E harness (mock gateway, simulator) | `./TestHarness/run_e2e.sh` exit 0 | PASS |
-| 3 | Protocol smoke vs real gateway | `protocol_smoke_test.py --port 7643` vs `jcode serve` | PASS |
+| 2 | E2E harness (two mock gateways, simulator) | `./TestHarness/run_e2e.sh` exit 0; `board.png` shows two server chips + an unreachable header, `chat.png` shows the attached needs_you session | PASS |
+| 3 | Protocol smoke vs real gateway | `protocol_smoke_test.py --port 7643` vs `jcode serve` (needs the docs/PHONE-WIRE.md requests: list_sessions, close_session, search_files, stdin replay) | UNVERIFIED vs real server (mock PASS) |
 | 4 | Interaction-graph engine deterministic | `python3 -m reward.interaction.test_engine` exit 0 | PASS |
 | 5 | Reward scorers deterministic | `python3 -m reward.test_determinism` exit 0 | PASS |
 | 6 | UX reward at or above baseline (88.7), worst cell >= 83 | `reward.aggregate --baseline --candidate` non-negative delta | PASS |
 | 7 | Foreground reconnect | scenePhase handler in JCodeMobileApp.swift | PASS |
 | 8 | Unauthorized (revoked token) stops reconnect loop, prompts re-pair | `unauthorizedStopsReconnectingAndAsksForRePair` test | PASS |
+| 8a | Board ranking + unreachable grouping | `boardRanks*` / `boardExcludesUnreachable*` tests | PASS |
+| 8b | Board poll never subscribes | `probeListsSessionsWithoutSubscribing` test + smoke "did not create a session" | PASS |
+| 8c | Deep links `jcode://board`, `jcode://session?host=&id=` | `deepLink*` tests; `attach.sh` in run_e2e | PASS |
 
 ## App Store submission requirements
 

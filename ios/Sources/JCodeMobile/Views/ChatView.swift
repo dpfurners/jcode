@@ -91,6 +91,22 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            Button {
+                model.detach()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 36, height: 36)
+                    .background(Theme.surface)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Board")
+            .accessibilityHint("Detaches and returns to the board")
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.session.sessionTitle ?? model.activeServer?.serverName ?? "jcode")
                     .font(Theme.mono(15, weight: .semibold))

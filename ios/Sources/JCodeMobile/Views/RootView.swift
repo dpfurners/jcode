@@ -1,7 +1,8 @@
 import JCodeKit
 import SwiftUI
 
-/// Top-level router: pairing when no server, chat otherwise.
+/// Top-level router: pairing when no server, the board otherwise, and the
+/// chat while a session is attached.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var deepLinkError: String?
@@ -10,34 +11,27 @@ struct RootView: View {
         GeometryReader { proxy in
             ZStack {
                 Theme.background.ignoresSafeArea()
-                if model.activeServer == nil {
+                if model.isAttached {
+                    ChatView()
+                        .transition(.move(edge: .trailing))
+                } else if !model.hasServers {
                     PairingView()
                 } else {
-                    ChatView()
+                    BoardView()
                 }
             }
+            .animation(.easeInOut(duration: 0.2), value: model.isAttached)
             .environment(\.compactEdgePads, CompactEdgePads(safeArea: proxy.safeAreaInsets))
         }
+        .onOpenURL { handle($0) }
+        #if DEBUG
         .task {
-            // Auto-connect to the most recent server on launch.
-            if let server = model.activeServer, !model.isConnected {
-                model.connect(to: server)
-            }
+            let task = DebugURLChannel.start { handle($0) }
+            await withTaskCancellationHandler(
+                operation: { await task.value },
+                onCancel: { task.cancel() })
         }
-        .onOpenURL { url in
-            guard let payload = PairURI.parse(url.absoluteString) else { return }
-            Task {
-                do {
-                    try await model.pair(
-                        gateway: payload.gateway,
-                        code: payload.code,
-                        deviceName: UIDevice.current.name
-                    )
-                } catch {
-                    deepLinkError = "Pairing failed: \(error.localizedDescription)"
-                }
-            }
-        }
+        #endif
         .alert("Pairing", isPresented: .init(
             get: { deepLinkError != nil },
             set: { if !$0 { deepLinkError = nil } }
@@ -45,6 +39,28 @@ struct RootView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(deepLinkError ?? "")
+        }
+    }
+}
+
+extension RootView {
+    /// Every `jcode://` URL, whether from SpringBoard or the debug channel.
+    fileprivate func handle(_ url: URL) {
+        if let link = DeepLink.parse(url.absoluteString) {
+            model.open(deepLink: link)
+            return
+        }
+        guard let payload = PairURI.parse(url.absoluteString) else { return }
+        Task {
+            do {
+                try await model.pair(
+                    gateway: payload.gateway,
+                    code: payload.code,
+                    deviceName: UIDevice.current.name
+                )
+            } catch {
+                deepLinkError = "Pairing failed: \(error.localizedDescription)"
+            }
         }
     }
 }

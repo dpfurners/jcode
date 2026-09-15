@@ -18,6 +18,7 @@ DEVICE="iPhone 17"
 PUSH_DEMO=""
 BUNDLE_ID="com.jcode.mobile"
 PORT=7643
+PORT2=7644
 SHOT_DIR="${TMPDIR:-/tmp}/jcode-ios-e2e"
 
 while [[ $# -gt 0 ]]; do
@@ -34,6 +35,7 @@ log() { printf '\033[36m[e2e]\033[0m %s\n' "$*"; }
 
 cleanup() {
   [[ -n "${GW_PID:-}" ]] && kill "$GW_PID" 2>/dev/null || true
+  [[ -n "${GW2_PID:-}" ]] && kill "$GW2_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -51,13 +53,16 @@ xcodebuild build \
   -derivedDataPath .build-ios >/dev/null
 APP=".build-ios/Build/Products/Debug-iphonesimulator/JCodeMobile.app"
 
-# 3. Start the deterministic mock gateway.
-log "starting mock gateway on :$PORT $PUSH_DEMO"
+# 3. Start two deterministic mock gateways so the board shows two servers.
+log "starting mock gateways on :$PORT and :$PORT2 $PUSH_DEMO"
 pkill -f mock_gateway.py 2>/dev/null || true
 sleep 0.5
 python3 "$HARNESS/mock_gateway.py" --port "$PORT" --host 127.0.0.1 $PUSH_DEMO \
-  >"$SHOT_DIR/mockgw.log" 2>&1 &
+  --name home-mini --icon "🏠" >"$SHOT_DIR/mockgw.log" 2>&1 &
 GW_PID=$!
+python3 "$HARNESS/mock_gateway.py" --port "$PORT2" --host 127.0.0.1 \
+  --name work-mini --icon "🔥" --token mocktoken2 >"$SHOT_DIR/mockgw2.log" 2>&1 &
+GW2_PID=$!
 sleep 1.5
 
 # 4. Protocol smoke test (asserts full message/tool/markdown sequence).
@@ -69,23 +74,30 @@ log "booting simulator: $DEVICE"
 xcrun simctl boot "$DEVICE" 2>/dev/null || true
 sleep 3
 
-# 6. Install fresh + seed a paired-server credential so the app auto-connects.
-log "installing app + seeding credential"
+# 6. Install fresh + seed two paired-server credentials (one per mock), plus a
+#    third that points at a closed port so the "unreachable" header renders.
+log "installing app + seeding credentials"
 xcrun simctl uninstall "$DEVICE" "$BUNDLE_ID" 2>/dev/null || true
 xcrun simctl install "$DEVICE" "$APP"
-CONTAINER="$(xcrun simctl get_app_container "$DEVICE" "$BUNDLE_ID" data)"
-APPSUP="$CONTAINER/Library/Application Support"
-mkdir -p "$APPSUP"
-printf '%s\n' \
-  '[{"host":"127.0.0.1","port":7643,"token":"mocktoken0123456789abcdef","serverName":"mock-jcode","serverVersion":"mock-0.32.0","pairedAt":770000000}]' \
-  > "$APPSUP/jcode-servers.json"
+"$HARNESS/seed_credential.sh" "$DEVICE" 127.0.0.1 "$PORT" mocktoken0123456789abcdef home-mini
+"$HARNESS/seed_credential.sh" "$DEVICE" 127.0.0.1 "$PORT2" mocktoken2 work-mini
+"$HARNESS/seed_credential.sh" "$DEVICE" 127.0.0.1 7699 dead laptop
 
-# 7. Launch + screenshot.
+# 7. Launch: the board polls both servers. Screenshot it.
 log "launching app"
 xcrun simctl launch "$DEVICE" "$BUNDLE_ID" >/dev/null
 sleep 6
+SHOT="$SHOT_DIR/board.png"
+xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1
+log "screenshot (board): $SHOT"
+
+# 8. Deep-link into the needs_you session on the first server: history +
+#    replayed stdin_request render the inline prompt card.
+log "attaching via deep link"
+"$HARNESS/attach.sh" "$DEVICE" mock-session-0002
+sleep 4
 SHOT="$SHOT_DIR/chat.png"
 xcrun simctl io "$DEVICE" screenshot "$SHOT" >/dev/null 2>&1
-log "screenshot: $SHOT"
-log "gateway log: $SHOT_DIR/mockgw.log"
+log "screenshot (attached, pending prompt): $SHOT"
+log "gateway logs: $SHOT_DIR/mockgw.log $SHOT_DIR/mockgw2.log"
 log "done"

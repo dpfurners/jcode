@@ -23,8 +23,23 @@ built against on this machine, without a device, network, or provider cost.
   `jcode` gateway.
 
 - **`run_e2e.sh`** - the one-command pipeline: `swift test` -> build app ->
-  start mock -> smoke test -> boot simulator -> seed a paired credential ->
-  launch -> screenshot.
+  start two mocks (`home-mini` :7643, `work-mini` :7644) -> smoke test ->
+  boot simulator -> seed three credentials (the third points at a closed
+  port so the board's "unreachable" header renders) -> launch -> screenshot
+  the board -> deep-link into the needs_you session -> screenshot the chat.
+
+- **Drivers** (each takes the simulator device name/UDID first):
+  - `seed_credential.sh <device> <host> <port> <token> <server_name>` appends
+    a paired server to the app container's credential fallback file.
+  - `attach.sh <device> <session_id> [host]` opens
+    `jcode://session?host=<host>&id=<session_id>` (host defaults to
+    `127.0.0.1`, matched against the seeded server's literal host).
+  - `debug_url.sh <device> <url>` delivers any `jcode://` URL to a DEBUG
+    build without SpringBoard's "Open in jcode?" sheet: it appends to
+    `<container>/tmp/jcode-debug-url`, which the app polls every 250 ms and
+    routes through the same handler as `onOpenURL`. Release builds do not
+    compile the poller. `JCODE_USE_OPENURL=1 attach.sh …` uses `simctl
+    openurl` instead (interactive).
 
 ## Usage
 
@@ -39,6 +54,18 @@ built against on this machine, without a device, network, or provider cost.
 python3 TestHarness/mock_gateway.py &        # or run a real `jcode` gateway
 python3 TestHarness/protocol_smoke_test.py --port 7643
 ```
+
+## Mock board
+
+The mock seeds four sessions per server (`needs_you` with a pending
+`stdin_request`, `running`, `failed`, `idle`), `recent_projects`, a fake file
+tree for `search_files`, and honours `list_sessions` pre-subscribe,
+`close_session {delete}`, attach by `target_session_id` (history, then the
+replayed `stdin_request`), `stdin_response` (→ `stdin_resolved`), `working_dir`
+on `subscribe` (only paths in its fake tree), `images` and `active_skill` on
+`message`. `--name`/`--icon` set the server chip. Two test-only requests:
+`_notify` (push a notification + compaction) and `_prompt {prompt,
+is_password}` (raise a `stdin_request` on the attached session).
 
 ## How auto-connect is seeded
 

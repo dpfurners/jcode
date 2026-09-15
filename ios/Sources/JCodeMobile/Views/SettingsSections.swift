@@ -10,9 +10,6 @@ struct SettingsSessionsSection: View {
 
     var body: some View {
         Section("Sessions") {
-            ForEach(model.session.allSessions, id: \.self) { sessionID in
-                sessionRow(sessionID)
-            }
             Button {
                 renameDraft = model.session.sessionTitle ?? ""
                 showRename = true
@@ -34,55 +31,12 @@ struct SettingsSessionsSection: View {
                 model.clearConversation()
                 dismiss()
             } label: {
-                Label("New session (clear)", systemImage: "square.and.pencil")
+                Label("Clear conversation", systemImage: "eraser")
                     .foregroundStyle(Theme.mint)
             }
             .listRowBackground(Theme.surface)
             .accessibilityHint("Clears the conversation and starts fresh")
         }
-    }
-
-    private func sessionRow(_ sessionID: String) -> some View {
-        let isActive = sessionID == model.session.sessionID
-        let title = model.session.title(forSession: sessionID)
-        return Button {
-            model.switchSession(sessionID)
-            dismiss()
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let title {
-                        Text(title)
-                            .font(.body)
-                            .foregroundStyle(Theme.textPrimary)
-                            .lineLimit(1)
-                    }
-                    Text(shortSessionID(sessionID))
-                        .font(Theme.mono(title == nil ? 13 : 11))
-                        .foregroundStyle(title == nil ? Theme.textPrimary : Theme.textTertiary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if isActive {
-                    Image(systemName: "checkmark")
-                        .font(.caption)
-                        .foregroundStyle(Theme.mint)
-                        .accessibilityHidden(true)
-                }
-            }
-        }
-        .listRowBackground(Theme.surface)
-        .accessibilityLabel("Session \(title ?? shortSessionID(sessionID))")
-        .accessibilityValue(isActive ? "Current" : "")
-        .accessibilityHint("Switches to this session")
-        .accessibilityAddTraits(isActive ? [.isSelected] : [])
-    }
-
-    private func shortSessionID(_ id: String) -> String {
-        if id.count > 24 {
-            return String(id.prefix(24)) + "…"
-        }
-        return id
     }
 }
 
@@ -95,9 +49,11 @@ struct SettingsServersSection: View {
         Section("Servers") {
             ForEach(model.servers) { server in
                 let isActive = server.id == model.activeServer?.id
+                let board = model.board.board(for: server.id)
                 Button {
-                    model.connect(to: server)
-                    dismiss()
+                    // Servers are not "selected" any more: the board shows
+                    // them all. Tapping refreshes that server's rows.
+                    Task { await model.board.pollOne(server) }
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
@@ -109,6 +65,16 @@ struct SettingsServersSection: View {
                                 .foregroundStyle(Theme.textTertiary)
                         }
                         Spacer()
+                        if board?.reachable == false {
+                            Text("unreachable")
+                                .font(Theme.mono(10.5))
+                                .foregroundStyle(Theme.error)
+                        } else if let version = board?.version {
+                            Text(version)
+                                .font(Theme.mono(10.5))
+                                .foregroundStyle(Theme.textTertiary)
+                                .lineLimit(1)
+                        }
                         if isActive {
                             Circle()
                                 .fill(Theme.mint)
@@ -119,8 +85,8 @@ struct SettingsServersSection: View {
                 }
                 .listRowBackground(Theme.surface)
                 .accessibilityLabel(server.serverName)
-                .accessibilityValue(isActive ? "Connected" : "")
-                .accessibilityHint("Connects to this server")
+                .accessibilityValue(isActive ? "Attached" : (board?.reachable == false ? "Unreachable" : ""))
+                .accessibilityHint("Refreshes this server's sessions")
                 .accessibilityAddTraits(isActive ? [.isSelected] : [])
                 .swipeActions {
                     Button(role: .destructive) {

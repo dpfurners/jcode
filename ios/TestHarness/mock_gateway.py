@@ -429,6 +429,8 @@ async def handle_request(ws, state, raw, conn=None):
         row = state.board.get(conn.session_id, {})
         if row.get("title"):
             payload["display_title"] = row["title"]
+        if row.get("model"):
+            payload["provider_model"] = row["model"]
         if conn.session_id != state.session_id:
             payload["messages"] = scenario_messages("short") if conn.session_id != "mock-session-0002" else [
                 {"role": "user", "content": "Set up the database layer"},

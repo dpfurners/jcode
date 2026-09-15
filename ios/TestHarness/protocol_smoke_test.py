@@ -144,7 +144,7 @@ def main():
     check("pair 200", st == 200)
     token = p.get("token", "")
     check("pair returns token", bool(token))
-    check("pair server_name", p.get("server_name") == "mock-jcode")
+    check("pair server_name", bool(p.get("server_name")))
 
     # 3b. board tier: list_sessions on a bare connection (pre-subscribe),
     # plus search_files with a working_dir. Neither may create a session.

@@ -15,13 +15,17 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                modelSection
-                if model.session.reasoningEffort != nil {
-                    reasoningSection
+                if model.isAttached {
+                    modelSection
+                    if model.session.reasoningEffort != nil {
+                        reasoningSection
+                    }
+                    SettingsSessionsSection(renameDraft: $renameDraft, showRename: $showRename)
                 }
-                SettingsSessionsSection(renameDraft: $renameDraft, showRename: $showRename)
                 SettingsServersSection(showPairNew: $showPairNew)
-                SettingsInfoSection()
+                if model.isAttached {
+                    SettingsInfoSection()
+                }
             }
             .scrollContentBackground(.hidden)
             .background(Theme.background)
@@ -56,7 +60,7 @@ struct SettingsView: View {
             }
             .preferredColorScheme(.dark)
         }
-        .onChange(of: model.activeServer?.id) {
+        .onChange(of: model.servers.count) {
             showPairNew = false
         }
     }

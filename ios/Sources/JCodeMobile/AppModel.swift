@@ -14,7 +14,11 @@ final class AppModel {
 
     private(set) var session = SessionState()
     private(set) var servers: [ServerCredential] = []
+    /// Server of the attached session. Nil while on the board.
     var activeServer: ServerCredential?
+    /// True while a session is attached (chat on screen). Back = detach.
+    private(set) var isAttached = false
+    let board = BoardModel()
 
     /// Composer draft.
     var draft = ""
@@ -28,8 +32,10 @@ final class AppModel {
     init(store: any CredentialStore = KeychainCredentialStore()) {
         self.store = store
         servers = store.loadAll()
-        activeServer = servers.last
+        board.setServers(servers)
     }
+
+    var hasServers: Bool { !servers.isEmpty }
 
     var isConnected: Bool {
         session.phase == .connected
@@ -54,16 +60,60 @@ final class AppModel {
         )
         store.save(credential)
         servers = store.loadAll()
-        activeServer = credential
-        connect(to: credential)
+        board.setServers(servers)
+        Task { await board.pollOne(credential) }
     }
 
     func removeServer(_ credential: ServerCredential) {
         store.remove(id: credential.id)
         servers = store.loadAll()
+        board.setServers(servers)
         if activeServer?.id == credential.id {
-            disconnect()
-            activeServer = servers.last
+            detach()
+        }
+    }
+
+    // MARK: - Attach / detach (board <-> chat)
+
+    /// Attaches to an existing session: full live sync alongside any other
+    /// client (no takeover).
+    func attach(to server: ServerCredential, sessionID: String) {
+        isAttached = true
+        connect(to: server, sessionID: sessionID)
+    }
+
+    /// Opens a new session in `workingDir` on `server`.
+    func startSession(on server: ServerCredential, workingDir: String) {
+        isAttached = true
+        session = SessionState()
+        open(server, sessionID: nil, workingDir: workingDir)
+    }
+
+    /// Back to the board: drops the session connection.
+    func detach() {
+        disconnect()
+        isAttached = false
+        activeServer = nil
+        session = SessionState()
+        draft = ""
+    }
+
+    /// Resolves a `jcode://` link. Returns false (and posts a board banner)
+    /// when the server is not paired.
+    @discardableResult
+    func open(deepLink: DeepLink) -> Bool {
+        switch deepLink {
+        case .board:
+            detach()
+            return true
+        case .session(let host, let id):
+            guard let server = DeepLink.matchServer(host: host, in: servers) else {
+                detach()
+                board.banner = "No paired server matches \"\(host)\""
+                return false
+            }
+            attach(to: server, sessionID: id)
+            return true
         }
     }
 
@@ -81,7 +131,7 @@ final class AppModel {
         open(activeServer, sessionID: session.sessionID)
     }
 
-    private func open(_ credential: ServerCredential, sessionID: String?) {
+    private func open(_ credential: ServerCredential, sessionID: String?, workingDir: String? = nil) {
         disconnect()
         activeServer = credential
         let connection = Connection(
@@ -92,7 +142,7 @@ final class AppModel {
         )
         self.connection = connection
         pumpTask = Task { [weak self] in
-            let stream = await connection.start(resumeSessionID: sessionID)
+            let stream = await connection.start(resumeSessionID: sessionID, workingDir: workingDir)
             for await output in stream {
                 guard let self else { return }
                 self.session = SessionReducer.reduce(self.session, output)
