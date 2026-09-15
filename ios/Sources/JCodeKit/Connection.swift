@@ -57,6 +57,9 @@ public actor Connection {
     private var runTask: Task<Void, Never>?
     private var continuation: AsyncStream<ConnectionOutput>.Continuation?
     private var targetSessionID: String?
+    /// Only used for the first subscribe of a fresh session; once the server
+    /// names the session, reconnects target it instead.
+    private var workingDir: String?
     private var stopped = false
     /// Set when the server announced a reload; the next reconnect attempt
     /// skips backoff because the drop is expected and the server returns fast.
@@ -77,8 +80,15 @@ public actor Connection {
 
     /// Starts the connection loop. The returned stream yields phase changes
     /// and decoded events until `stop()` is called or the stream is cancelled.
-    public func start(resumeSessionID: String? = nil) -> AsyncStream<ConnectionOutput> {
+    ///
+    /// `workingDir` (with no `resumeSessionID`) creates a new session in that
+    /// project. The phone never takes a session over: it attaches alongside
+    /// other clients.
+    public func start(resumeSessionID: String? = nil, workingDir: String? = nil)
+        -> AsyncStream<ConnectionOutput>
+    {
         targetSessionID = resumeSessionID
+        self.workingDir = resumeSessionID == nil ? workingDir : nil
         stopped = false
         expectServerReload = false
         closeRequestedReason = nil
@@ -175,7 +185,10 @@ public actor Connection {
 
     private func subscribeAndSync() async throws {
         let sessionID = targetSessionID
-        try await send { .subscribe(id: $0, targetSessionID: sessionID) }
+        let workingDir = sessionID == nil ? self.workingDir : nil
+        try await send {
+            .subscribe(id: $0, targetSessionID: sessionID, workingDir: workingDir)
+        }
         try await send { .getHistory(id: $0) }
     }
 
@@ -188,6 +201,7 @@ public actor Connection {
                     switch event {
                     case .sessionID(let sessionID):
                         targetSessionID = sessionID
+                        workingDir = nil
                     case .reloading:
                         expectServerReload = true
                     case .sessionCloseRequested(let reason):
