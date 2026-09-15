@@ -26,9 +26,14 @@ import json
 import struct
 import sys
 
+import os
+import time
+
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SERVER_VERSION = "mock-0.32.0"
 SERVER_NAME = "mock-jcode"
+SERVER_ICON = "🧪"
+SKILLS = ["grill-me", "caveman", "humanizer", "optimization"]
 DEFAULT_MODELS = [
     "claude-api:claude-fable-5",
     "claude-api:claude-sonnet-4",
@@ -37,10 +42,16 @@ DEFAULT_MODELS = [
 ]
 
 
+def iso(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
 class GatewayState:
-    def __init__(self, code, token):
+    def __init__(self, code, token, name=SERVER_NAME, icon=SERVER_ICON):
         self.code = code
         self.token = token
+        self.name = name
+        self.icon = icon
         self.session_id = "mock-session-0001"
         self.title = "Mock session"
         self.model = DEFAULT_MODELS[0]
@@ -49,6 +60,86 @@ class GatewayState:
         self.token_output = 0
         self.reasoning_effort = "high"
         self.push_demo = False
+        # Board tier (docs/PHONE-WIRE.md `list_sessions`). Keyed by id; the
+        # first entry is the session `subscribe` without a target attaches to.
+        now = time.time()
+        self.board = {
+            self.session_id: {
+                "id": self.session_id, "short_name": "mock", "title": self.title,
+                "working_dir": "/Users/me/dev/jcode",
+                "created_at": iso(now - 3600), "updated_at": iso(now - 60),
+                "last_active_at": iso(now - 60),
+                "model": self.model, "provider": "claude",
+                "phase": "idle", "reason": None, "current_tool": None,
+                "turn_started_at": None, "queued": 0, "pending_prompt": None,
+                "preview": {"kind": "assistant", "text": "Done. Output above."},
+                "client_count": 0, "is_live": True, "parent_id": None, "swarm_role": None,
+            },
+            "mock-session-0002": {
+                "id": "mock-session-0002", "short_name": "fox", "title": "Fix the queue bar",
+                "working_dir": "/Users/me/dev/jed",
+                "created_at": iso(now - 7200), "updated_at": iso(now - 5),
+                "last_active_at": iso(now - 5),
+                "model": "claude-api:claude-opus-4", "provider": "claude",
+                "phase": "needs_you", "reason": "waiting for input", "current_tool": "ask_user",
+                "turn_started_at": iso(now - 95), "queued": 1,
+                "pending_prompt": {"request_id": "req-fox-1", "prompt": "Which DB should I use? ",
+                                   "is_password": False, "tool_call_id": "tool-ask-1"},
+                "preview": {"kind": "prompt", "text": "Which DB should I use?"},
+                "client_count": 1, "is_live": True, "parent_id": None, "swarm_role": None,
+            },
+            "mock-session-0003": {
+                "id": "mock-session-0003", "short_name": "owl", "title": None,
+                "working_dir": "/Users/me/dev/jcode",
+                "created_at": iso(now - 900), "updated_at": iso(now - 2),
+                "last_active_at": iso(now - 2),
+                "model": self.model, "provider": "claude",
+                "phase": "running", "reason": None, "current_tool": "bash",
+                "turn_started_at": iso(now - 42), "queued": 0, "pending_prompt": None,
+                "preview": {"kind": "streaming", "text": "Running the test suite now, this may take"},
+                "client_count": 0, "is_live": True, "parent_id": None, "swarm_role": None,
+            },
+            "mock-session-0004": {
+                "id": "mock-session-0004", "short_name": "elk", "title": "Migrate to SwiftData",
+                "working_dir": "/Users/me/dev/jcode-mobile",
+                "created_at": iso(now - 86400), "updated_at": iso(now - 3000),
+                "last_active_at": iso(now - 3000),
+                "model": "openai:gpt-5", "provider": "openai",
+                "phase": "failed", "reason": "rate limited", "current_tool": None,
+                "turn_started_at": None, "queued": 0, "pending_prompt": None,
+                "preview": {"kind": "user", "text": "please migrate the store"},
+                "client_count": 0, "is_live": False, "parent_id": None, "swarm_role": None,
+            },
+        }
+        self.recent_projects = [
+            {"path": "/Users/me/dev/jed", "last_used_at": iso(now - 5), "session_count": 41},
+            {"path": "/Users/me/dev/jcode", "last_used_at": iso(now - 2), "session_count": 12},
+            {"path": "/Users/me/dev/jcode-mobile", "last_used_at": iso(now - 3000), "session_count": 3},
+        ]
+        # Fake filesystem for search_files.
+        self.files = [
+            ("Sources/JCodeKit/Wire.swift", False),
+            ("Sources/JCodeKit/SessionReducer.swift", False),
+            ("Sources/JCodeMobile/Views/Composer.swift", False),
+            ("Sources/JCodeMobile/Views/ChatView.swift", False),
+            ("TestHarness/mock_gateway.py", False),
+            ("Sources", True),
+            ("TestHarness", True),
+        ]
+        self.dirs = ["/Users/me/dev/jed", "/Users/me/dev/jcode", "/Users/me/dev/jcode-mobile",
+                     "/Users/me/dev/scratch", "/Users/me/Documents", "/tmp"]
+
+    def sessions_payload(self, req_id, limit=100, include_workers=False):
+        rows = sorted(self.board.values(), key=lambda r: r["updated_at"], reverse=True)
+        if not include_workers:
+            rows = [r for r in rows if r.get("parent_id") is None]
+        return {
+            "type": "sessions", "id": req_id,
+            "server_name": self.name, "server_icon": self.icon,
+            "server_version": SERVER_VERSION,
+            "sessions": rows[:limit],
+            "recent_projects": self.recent_projects,
+        }
 
 
 def scenario_messages(name):
@@ -257,10 +348,40 @@ def history_payload(state, req_id):
         "server_version": SERVER_VERSION,
         "display_title": state.title,
         "reasoning_effort": state.reasoning_effort,
+        "skills": SKILLS,
     }
 
 
-async def handle_request(ws, state, raw):
+def fuzzy_match(query, path):
+    """Subsequence match, case-insensitive (mirrors the server's fuzzy mode)."""
+    q = query.lower()
+    it = iter(path.lower())
+    return all(ch in it for ch in q)
+
+
+def file_matches_payload(state, req_id, msg):
+    query = msg.get("query", "")
+    limit = int(msg.get("limit") or 30)
+    dirs_only = bool(msg.get("dirs_only", False))
+    if query.startswith("/"):
+        hits = [{"path": d, "is_dir": True} for d in state.dirs if d.startswith(query)]
+    else:
+        hits = [{"path": p, "is_dir": d} for p, d in state.files
+                if (not dirs_only or d) and fuzzy_match(query, p)]
+    return {"type": "file_matches", "id": req_id, "query": query, "matches": hits[:limit]}
+
+
+class ConnState:
+    """Per-connection facts: which session it is attached to and whether a
+    pending prompt still has to be replayed after `history`."""
+
+    def __init__(self, session_id):
+        self.session_id = session_id
+        self.replay_prompt = None
+
+
+async def handle_request(ws, state, raw, conn=None):
+    conn = conn or ConnState(state.session_id)
     try:
         msg = json.loads(raw)
     except json.JSONDecodeError:
@@ -270,16 +391,97 @@ async def handle_request(ws, state, raw):
     print(f"[ws] <- {req_type} id={req_id}", file=sys.stderr)
 
     if req_type == "subscribe":
+        target = msg.get("target_session_id")
+        working_dir = msg.get("working_dir")
+        if target and target not in state.board:
+            await send_event(ws, {"type": "error", "id": req_id, "message": f"unknown session {target}"})
+            return
+        if target:
+            conn.session_id = target
+        elif working_dir:
+            # New session in a project: the real daemon rejects a missing
+            # directory; the mock only knows its fake tree.
+            if working_dir not in state.dirs:
+                await send_event(ws, {"type": "error", "id": req_id,
+                                      "message": f"working_dir does not exist: {working_dir}"})
+                return
+            new_id = f"mock-session-{len(state.board) + 1:04d}"
+            state.board[new_id] = {
+                **state.board[state.session_id], "id": new_id, "short_name": "new",
+                "title": None, "working_dir": working_dir, "phase": "idle",
+                "preview": None, "created_at": iso(time.time()), "updated_at": iso(time.time()),
+                "is_live": True, "client_count": 1,
+            }
+            conn.session_id = new_id
+        else:
+            conn.session_id = state.session_id
+        row = state.board[conn.session_id]
         await send_event(ws, {"type": "ack", "id": req_id})
-        await send_event(ws, {"type": "session", "session_id": state.session_id})
+        await send_event(ws, {"type": "session", "session_id": conn.session_id})
         await send_event(ws, {
-            "type": "state", "id": req_id, "session_id": state.session_id,
-            "message_count": len(state.messages), "is_processing": False,
+            "type": "state", "id": req_id, "session_id": conn.session_id,
+            "message_count": len(state.messages), "is_processing": row["phase"] in ("running", "needs_you"),
         })
+        conn.replay_prompt = row.get("pending_prompt")
     elif req_type == "get_history":
-        await send_event(ws, history_payload(state, req_id))
+        payload = history_payload(state, req_id)
+        payload["session_id"] = conn.session_id
+        row = state.board.get(conn.session_id, {})
+        if row.get("title"):
+            payload["display_title"] = row["title"]
+        if conn.session_id != state.session_id:
+            payload["messages"] = scenario_messages("short") if conn.session_id != "mock-session-0002" else [
+                {"role": "user", "content": "Set up the database layer"},
+                {"role": "assistant", "content": "I need to know which database you prefer before continuing.",
+                 "tool_data": {"id": "tool-ask-1", "name": "ask_user",
+                               "input": '{"question": "Which DB should I use?"}', "output": None, "error": None}},
+            ]
+        await send_event(ws, payload)
+        # Pending prompts survive reconnects: replay after history.
+        if conn.replay_prompt:
+            await send_event(ws, {"type": "stdin_request", **conn.replay_prompt})
+            conn.replay_prompt = None
+    elif req_type == "list_sessions":
+        await send_event(ws, state.sessions_payload(
+            req_id, int(msg.get("limit") or 100), bool(msg.get("include_workers", False))))
+    elif req_type == "close_session":
+        sid = msg.get("session_id")
+        if sid not in state.board:
+            await send_event(ws, {"type": "error", "id": req_id, "message": f"unknown session {sid}"})
+            return
+        delete = bool(msg.get("delete", False))
+        if delete:
+            del state.board[sid]
+        else:
+            row = state.board[sid]
+            row.update({"phase": "idle", "current_tool": None, "turn_started_at": None,
+                        "queued": 0, "pending_prompt": None, "is_live": False, "client_count": 0})
+        await send_event(ws, {"type": "session_closed", "id": req_id, "session_id": sid, "deleted": delete})
+    elif req_type == "search_files":
+        await send_event(ws, file_matches_payload(state, req_id, msg))
+    elif req_type == "stdin_response":
+        rid = msg.get("request_id")
+        row = state.board.get(conn.session_id, {})
+        pp = row.get("pending_prompt")
+        if pp and pp["request_id"] == rid:
+            row.update({"pending_prompt": None, "phase": "running", "current_tool": "bash",
+                        "preview": {"kind": "streaming", "text": f"Using {msg.get('input', '')}"}})
+            await send_event(ws, {"type": "ack", "id": req_id})
+            await send_event(ws, {"type": "stdin_resolved", "request_id": rid})
+            await send_event(ws, {"type": "text_delta", "text": f"Using {msg.get('input', '')}. "})
+            await send_event(ws, {"type": "message_end"})
+            row.update({"phase": "idle", "current_tool": None, "turn_started_at": None})
+            await send_event(ws, {"type": "done", "id": req_id})
+        else:
+            await send_event(ws, {"type": "error", "id": req_id, "message": f"no pending request {rid}"})
     elif req_type == "message":
-        await stream_response(ws, state, msg.get("content", ""), req_id)
+        images = msg.get("images") or []
+        content = msg.get("content", "")
+        if images:
+            content += f" [+{len(images)} image(s): {', '.join(i[0] for i in images)}]"
+        if msg.get("active_skill"):
+            content += f" [skill={msg['active_skill']}]"
+        await stream_response(ws, state, content, req_id)
     elif req_type == "soft_interrupt":
         await send_event(ws, {"type": "ack", "id": req_id})
         # Mirror the real server: confirm the queued message was injected
@@ -324,6 +526,14 @@ async def handle_request(ws, state, raw):
         # Test-only: synthesize a push notification + a compaction notice.
         await send_event(ws, {"type": "notification", "from_name": "swarm", "message": "build finished"})
         await send_event(ws, {"type": "compaction", "trigger": "manual", "tokens_saved": 4096})
+    elif req_type == "_prompt":
+        # Test-only: raise a stdin_request on the attached session so the
+        # inline prompt card can be exercised on demand.
+        prompt = {"request_id": f"req-{req_id}", "prompt": msg.get("prompt", "Password: "),
+                  "is_password": bool(msg.get("is_password", False)), "tool_call_id": "tool-x"}
+        state.board[conn.session_id].update({"pending_prompt": prompt, "phase": "needs_you",
+                                             "current_tool": "bash"})
+        await send_event(ws, {"type": "stdin_request", **prompt})
     else:
         print(f"[ws] (ignored unknown request {req_type})", file=sys.stderr)
 
@@ -406,7 +616,7 @@ async def handle_connection(reader, writer, state):
         except Exception:
             payload = {}
         if payload.get("code", "") == state.code:
-            resp = jline({"token": state.token, "server_name": SERVER_NAME, "server_version": SERVER_VERSION})
+            resp = jline({"token": state.token, "server_name": state.name, "server_version": SERVER_VERSION})
             writer.write(http_response("200 OK", resp))
         else:
             resp = jline({"error": "Invalid or expired pairing code"})
@@ -445,6 +655,7 @@ async def serve_websocket(reader, writer, headers, state):
     push_demo = None
     if getattr(state, "push_demo", False):
         push_demo = asyncio.create_task(push_demo_loop(ws))
+    conn = ConnState(state.session_id)
     try:
         buffered = ""
         while True:
@@ -463,9 +674,9 @@ async def serve_websocket(reader, writer, headers, state):
                     line, buffered = buffered.split("\n", 1)
                     line = line.strip()
                     if line:
-                        await handle_request(ws, state, line)
+                        await handle_request(ws, state, line, conn)
                 if buffered.strip():
-                    await handle_request(ws, state, buffered.strip())
+                    await handle_request(ws, state, buffered.strip(), conn)
                     buffered = ""
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
@@ -514,9 +725,11 @@ async def main():
                         help="spontaneously push notification + compaction notices after connect")
     parser.add_argument("--scenario", default="",
                         help="pre-seed transcript: empty|short|tool|long|code")
+    parser.add_argument("--name", default=SERVER_NAME, help="server_name (board chip)")
+    parser.add_argument("--icon", default=SERVER_ICON, help="server_icon (board chip)")
     args = parser.parse_args()
 
-    state = GatewayState(args.code, args.token)
+    state = GatewayState(args.code, args.token, name=args.name, icon=args.icon)
     state.push_demo = args.push_demo
     if args.scenario:
         state.messages = scenario_messages(args.scenario)

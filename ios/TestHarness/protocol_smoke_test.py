@@ -146,6 +146,89 @@ def main():
     check("pair returns token", bool(token))
     check("pair server_name", p.get("server_name") == "mock-jcode")
 
+    # 3b. board tier: list_sessions on a bare connection (pre-subscribe),
+    # plus search_files with a working_dir. Neither may create a session.
+    b = ws_connect(args.host, args.port, token)
+    ws_send(b, json.dumps({"id": 1, "type": "list_sessions", "limit": 100, "include_workers": False}))
+    evs = collect_events(b, until_type="sessions")
+    sessions = next((e for e in evs if e["type"] == "sessions"), None)
+    check("list_sessions pre-subscribe -> sessions", sessions is not None)
+    check("list_sessions did not create a session", "session" not in [e["type"] for e in evs])
+    if sessions:
+        rows = sessions.get("sessions", [])
+        check("sessions carries server_name", bool(sessions.get("server_name")))
+        check("sessions has rows", len(rows) >= 2)
+        required = {"id", "short_name", "title", "working_dir", "updated_at", "phase",
+                    "queued", "pending_prompt", "preview", "client_count", "is_live"}
+        check("session rows have contract fields",
+              all(required <= set(r.keys()) for r in rows))
+        check("phases are in the contract set",
+              all(r["phase"] in ("needs_you", "failed", "running", "idle") for r in rows))
+        needs = [r for r in rows if r["phase"] == "needs_you"]
+        check("a needs_you row carries pending_prompt + prompt preview",
+              needs and needs[0]["pending_prompt"] and needs[0]["preview"]["kind"] == "prompt")
+        check("preview text <= 240 chars",
+              all(len((r.get("preview") or {}).get("text", "")) <= 240 for r in rows))
+        check("recent_projects present", len(sessions.get("recent_projects", [])) >= 1)
+    ws_send(b, json.dumps({"id": 2, "type": "search_files", "query": "/Users/me/de",
+                           "limit": 30, "dirs_only": True, "working_dir": None}))
+    evs = collect_events(b, until_type="file_matches")
+    fm = next((e for e in evs if e["type"] == "file_matches"), None)
+    check("search_files absolute -> file_matches", fm is not None and fm.get("query") == "/Users/me/de")
+    check("absolute mode returns absolute dirs",
+          fm is not None and fm["matches"] and all(m["path"].startswith("/") and m["is_dir"] for m in fm["matches"]))
+    ws_send(b, json.dumps({"id": 3, "type": "search_files", "query": "compos", "limit": 30,
+                           "dirs_only": False, "working_dir": "/Users/me/dev/jcode"}))
+    evs = collect_events(b, until_type="file_matches")
+    fm = next((e for e in evs if e["type"] == "file_matches"), None)
+    check("search_files fuzzy -> relative match",
+          fm is not None and any("Composer" in m["path"] for m in fm["matches"]))
+    b.close()
+
+    # 3c. attach to the needs_you session: history, then the replayed
+    # stdin_request, then answer it from this (second) client.
+    if sessions and needs:
+        a = ws_connect(args.host, args.port, token)
+        ws_send(a, json.dumps({"id": 1, "type": "subscribe", "target_session_id": needs[0]["id"]}))
+        evs = collect_events(a, until_type="state")
+        sess = next((e for e in evs if e["type"] == "session"), None)
+        check("attach -> session id matches target", sess and sess["session_id"] == needs[0]["id"])
+        ws_send(a, json.dumps({"id": 2, "type": "get_history"}))
+        evs = collect_events(a, until_type="stdin_request")
+        types = [e["type"] for e in evs]
+        check("attach replays stdin_request after history",
+              "history" in types and "stdin_request" in types
+              and types.index("history") < types.index("stdin_request"))
+        sr = next((e for e in evs if e["type"] == "stdin_request"), None)
+        rid = sr["request_id"] if sr else ""
+        check("stdin_request has request_id/prompt/is_password",
+              sr is not None and rid and "prompt" in sr and "is_password" in sr)
+        ws_send(a, json.dumps({"id": 3, "type": "stdin_response", "request_id": rid, "input": "postgres"}))
+        evs = collect_events(a, until_type="done")
+        types = [e["type"] for e in evs]
+        check("stdin_response -> stdin_resolved", "stdin_resolved" in types)
+        # The board must now report the prompt gone.
+        ws_send(a, json.dumps({"id": 4, "type": "list_sessions"}))
+        evs = collect_events(a, until_type="sessions")
+        after = next((e for e in evs if e["type"] == "sessions"), None)
+        row = next((r for r in after["sessions"] if r["id"] == needs[0]["id"]), None) if after else None
+        check("board row cleared pending_prompt after answer",
+              row is not None and row["pending_prompt"] is None and row["phase"] != "needs_you")
+        # close_session (stop, keep) then delete
+        ws_send(a, json.dumps({"id": 5, "type": "close_session", "session_id": "mock-session-0003", "delete": False}))
+        evs = collect_events(a, until_type="session_closed")
+        sc = next((e for e in evs if e["type"] == "session_closed"), None)
+        check("close_session -> session_closed deleted=false",
+              sc is not None and sc["session_id"] == "mock-session-0003" and sc["deleted"] is False)
+        ws_send(a, json.dumps({"id": 6, "type": "close_session", "session_id": "mock-session-0004", "delete": True}))
+        evs = collect_events(a, until_type="session_closed")
+        sc = next((e for e in evs if e["type"] == "session_closed"), None)
+        check("close_session delete -> deleted=true", sc is not None and sc["deleted"] is True)
+        ws_send(a, json.dumps({"id": 7, "type": "close_session", "session_id": "nope", "delete": False}))
+        evs = collect_events(a, until_type="error")
+        check("close_session unknown id -> error", any(e["type"] == "error" for e in evs))
+        a.close()
+
     # 4. ws connect + subscribe + history
     s = ws_connect(args.host, args.port, token)
     ws_send(s, json.dumps({"id": 1, "type": "subscribe"}))
@@ -162,6 +245,15 @@ def main():
     if hist:
         check("history available_models", len(hist.get("available_models", [])) >= 1)
         check("history all_sessions", len(hist.get("all_sessions", [])) >= 1)
+        check("history skills", len(hist.get("skills", [])) >= 1)
+
+    # 4b. message with images ([mime, base64] pairs) + active_skill
+    ws_send(s, json.dumps({"id": 20, "type": "message", "content": "/caveman describe",
+                           "images": [["image/jpeg", "AAAA"]], "active_skill": "caveman"}))
+    evs = collect_events(s, until_type="done")
+    streamed = "".join(e.get("text", "") for e in evs if e["type"] == "text_delta")
+    check("message with images accepted", "image/jpeg" in streamed)
+    check("message active_skill accepted", "skill=caveman" in streamed)
 
     # 5. message -> full stream
     ws_send(s, json.dumps({"id": 3, "type": "message", "content": "hi there"}))
