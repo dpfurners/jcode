@@ -31,6 +31,13 @@ struct RootView: View {
                 operation: { await task.value },
                 onCancel: { task.cancel() })
         }
+        .task {
+            guard SyncDumpWriter.isEnabled else { return }
+            let task = SyncDumpWriter.start(model: model)
+            await withTaskCancellationHandler(
+                operation: { await task.value },
+                onCancel: { task.cancel() })
+        }
         #endif
         .alert("Pairing", isPresented: .init(
             get: { deepLinkError != nil },
