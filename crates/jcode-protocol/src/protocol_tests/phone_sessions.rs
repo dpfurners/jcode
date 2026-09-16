@@ -1,6 +1,8 @@
 #[test]
 fn wire_list_sessions_request_roundtrip() -> Result<()> {
-    let decoded = parse_request_json(r#"{"id":7,"type":"list_sessions","limit":100,"include_workers":false}"#)?;
+    let decoded = parse_request_json(
+        r#"{"id":7,"type":"list_sessions","limit":100,"include_workers":false}"#,
+    )?;
     let Request::ListSessions {
         id,
         limit,
@@ -45,9 +47,15 @@ fn wire_close_session_request_roundtrip() -> Result<()> {
     else {
         return Err(anyhow!("wrong request type"));
     };
-    assert_eq!((id, session_id.as_str(), delete), (8, "session_fox_1", true));
+    assert_eq!(
+        (id, session_id.as_str(), delete),
+        (8, "session_fox_1", true)
+    );
     let no_delete = parse_request_json(r#"{"id":2,"type":"close_session","session_id":"x"}"#)?;
-    assert!(matches!(no_delete, Request::CloseSession { delete: false, .. }));
+    assert!(matches!(
+        no_delete,
+        Request::CloseSession { delete: false, .. }
+    ));
     Ok(())
 }
 
@@ -159,7 +167,11 @@ fn wire_session_closed_event_roundtrip() -> Result<()> {
     );
     assert!(matches!(
         parse_event_json(&json)?,
-        ServerEvent::SessionClosed { id: 8, deleted: false, .. }
+        ServerEvent::SessionClosed {
+            id: 8,
+            deleted: false,
+            ..
+        }
     ));
     Ok(())
 }

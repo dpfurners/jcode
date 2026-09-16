@@ -7,13 +7,13 @@
 use super::debug::ClientConnectionInfo;
 use super::state::{SessionInterruptQueues, SwarmMember, fanout_session_event};
 use crate::agent::Agent;
+use crate::message::{ContentBlock, Role};
 use crate::protocol::{
     FileMatch, PendingPromptInfo, PreviewInfo, RecentProject, ServerEvent, SessionRow,
 };
 use crate::session::{Session, SessionStatus, StoredMessage};
 use chrono::{DateTime, Utc};
 use jcode_agent_runtime::InterruptSignal;
-use crate::message::{ContentBlock, Role};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -208,7 +208,11 @@ pub(super) fn recent_projects(pins: &[String], rows: &[SessionRow]) -> Vec<Recen
         match index.get(dir) {
             Some(&i) => {
                 out[i].session_count += 1;
-                if out[i].last_used_at.as_deref().is_none_or(|prev| used.as_str() > prev) {
+                if out[i]
+                    .last_used_at
+                    .as_deref()
+                    .is_none_or(|prev| used.as_str() > prev)
+                {
                     out[i].last_used_at = Some(used);
                 }
             }
@@ -544,8 +548,7 @@ pub(super) async fn close_session(
     .await;
 
     if let Some(agent_arc) = super::remove_session_entry(ctx.sessions, session_id).await {
-        super::state::remove_session_interrupt_queue(ctx.soft_interrupt_queues, session_id)
-            .await;
+        super::state::remove_session_interrupt_queue(ctx.soft_interrupt_queues, session_id).await;
         if let Ok(mut agent) = agent_arc.try_lock() {
             agent.mark_closed();
         }
@@ -553,13 +556,9 @@ pub(super) async fn close_session(
     ctx.shutdown_signals.write().await.remove(session_id);
 
     let mut deleted = false;
-    if delete {
-        if let Ok(path) = crate::session::session_path(session_id) {
-            deleted = std::fs::remove_file(&path).is_ok();
-            let _ = std::fs::remove_file(crate::session::session_journal_path_from_snapshot(
-                &path,
-            ));
-        }
+    if delete && let Ok(path) = crate::session::session_path(session_id) {
+        deleted = std::fs::remove_file(&path).is_ok();
+        let _ = std::fs::remove_file(crate::session::session_journal_path_from_snapshot(&path));
     }
 
     ServerEvent::SessionClosed {
@@ -705,8 +704,16 @@ pub(super) fn search_absolute(query: &str, limit: usize, dirs_only: bool) -> Vec
         .collect();
     matches.sort_by(|a, b| {
         // Non-hidden first, then directories, then name.
-        let a_hidden = a.path.rsplit('/').find(|s| !s.is_empty()).is_some_and(|n| n.starts_with('.'));
-        let b_hidden = b.path.rsplit('/').find(|s| !s.is_empty()).is_some_and(|n| n.starts_with('.'));
+        let a_hidden = a
+            .path
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .is_some_and(|n| n.starts_with('.'));
+        let b_hidden = b
+            .path
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .is_some_and(|n| n.starts_with('.'));
         a_hidden
             .cmp(&b_hidden)
             .then_with(|| b.is_dir.cmp(&a.is_dir))
@@ -735,8 +742,7 @@ pub(super) async fn build_file_matches_event(
     let Some(working_dir) = working_dir else {
         return ServerEvent::Error {
             id,
-            message: "search_files needs working_dir on a connection without a session"
-                .to_string(),
+            message: "search_files needs working_dir on a connection without a session".to_string(),
             retry_after_secs: None,
         };
     };
@@ -752,11 +758,10 @@ pub(super) async fn build_file_matches_event(
     // async workers so a slow disk never stalls other connections.
     let root = root.to_path_buf();
     let owned_query = query.to_string();
-    let matches = tokio::task::spawn_blocking(move || {
-        search_relative(&root, &owned_query, limit, dirs_only)
-    })
-    .await
-    .unwrap_or_default();
+    let matches =
+        tokio::task::spawn_blocking(move || search_relative(&root, &owned_query, limit, dirs_only))
+            .await
+            .unwrap_or_default();
     ServerEvent::FileMatches {
         id,
         query: query.to_string(),

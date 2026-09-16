@@ -98,8 +98,7 @@ impl Harness {
         crate::transport::Stream,
         tokio::task::JoinHandle<Result<()>>,
     ) {
-        let (server_stream, client_stream) =
-            crate::transport::Stream::pair().expect("socket pair");
+        let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
         let provider_template: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
             forked: Arc::clone(&self.forked),
         });
@@ -224,11 +223,17 @@ async fn list_sessions_on_bare_connection_lists_disk_sessions_without_creating_o
     assert_eq!(preview.kind, "user");
     assert_eq!(preview.text, "hello from session_alpha_1_a");
     let paths: Vec<&str> = recent_projects.iter().map(|p| p.path.as_str()).collect();
-    assert!(paths.contains(&"/tmp/alpha") && paths.contains(&"/tmp/beta"), "{paths:?}");
+    assert!(
+        paths.contains(&"/tmp/alpha") && paths.contains(&"/tmp/beta"),
+        "{paths:?}"
+    );
 
     // No throwaway session was created in memory or on disk.
     assert!(harness.sessions.read().await.is_empty());
-    assert_eq!(crate::server::phone_sessions::on_disk_session_ids().len(), 3);
+    assert_eq!(
+        crate::server::phone_sessions::on_disk_session_ids().len(),
+        3
+    );
     assert!(!harness.forked.load(Ordering::SeqCst));
     task.await.expect("join").expect("server task");
 }
@@ -313,7 +318,10 @@ async fn close_session_notifies_attached_client_and_unloads_agent() {
         matches!(notified, ServerEvent::SessionCloseRequested { .. }),
         "{notified:?}"
     );
-    assert!(crate::session::session_exists(sid), "delete=false keeps the file");
+    assert!(
+        crate::session::session_exists(sid),
+        "delete=false keeps the file"
+    );
     task.await.expect("join").expect("server task");
 
     // delete=true removes the file; unknown id afterwards is an error.
@@ -344,7 +352,10 @@ async fn close_session_notifies_attached_client_and_unloads_agent() {
         },
     )
     .await;
-    assert!(matches!(event, ServerEvent::Error { id: 10, .. }), "{event:?}");
+    assert!(
+        matches!(event, ServerEvent::Error { id: 10, .. }),
+        "{event:?}"
+    );
     task.await.expect("join").expect("server task");
 }
 
@@ -395,7 +406,10 @@ async fn search_files_on_bare_connection_honours_gitignore() {
         },
     )
     .await;
-    assert!(matches!(event, ServerEvent::Error { id: 11, .. }), "{event:?}");
+    assert!(
+        matches!(event, ServerEvent::Error { id: 11, .. }),
+        "{event:?}"
+    );
     assert!(harness.sessions.read().await.is_empty());
     task.await.expect("join").expect("server task");
 }

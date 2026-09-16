@@ -107,8 +107,8 @@ pub(super) async fn handle_phone_board_request(
     ctx: &PhoneBoardContext<'_>,
 ) -> Option<ServerEvent> {
     use super::phone_sessions::{
-        CloseSessionContext, ListSessionsContext, build_file_matches_event,
-        build_sessions_event, close_session,
+        CloseSessionContext, ListSessionsContext, build_file_matches_event, build_sessions_event,
+        close_session,
     };
     match request {
         Request::ListSessions {

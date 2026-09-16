@@ -129,9 +129,10 @@ pub(super) async fn maybe_handle_server_state_command(
             )
             .await;
             match event {
-                crate::protocol::ServerEvent::Sessions { sessions, .. } => {
-                    sessions.into_iter().map(|row| (row.id.clone(), row)).collect()
-                }
+                crate::protocol::ServerEvent::Sessions { sessions, .. } => sessions
+                    .into_iter()
+                    .map(|row| (row.id.clone(), row))
+                    .collect(),
                 _ => HashMap::new(),
             }
         };

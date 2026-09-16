@@ -116,7 +116,11 @@ fn recent_projects_pins_first_and_dedupes() {
         row("c", Some("/p/one"), "2026-01-01T00:00:00Z"),
         row("d", None, "2026-01-01T00:00:00Z"),
     ];
-    let pins = vec!["/p/two".to_string(), "/p/pinned".to_string(), "/p/two".to_string()];
+    let pins = vec![
+        "/p/two".to_string(),
+        "/p/pinned".to_string(),
+        "/p/two".to_string(),
+    ];
     let projects = recent_projects(&pins, &rows);
     let paths: Vec<&str> = projects.iter().map(|p| p.path.as_str()).collect();
     assert_eq!(paths, vec!["/p/two", "/p/pinned", "/p/one"]);
@@ -132,7 +136,13 @@ fn recent_projects_pins_first_and_dedupes() {
 #[test]
 fn recent_projects_capped_at_twenty() {
     let rows: Vec<SessionRow> = (0..30)
-        .map(|i| row(&format!("s{i}"), Some(&format!("/p/{i}")), "2026-01-01T00:00:00Z"))
+        .map(|i| {
+            row(
+                &format!("s{i}"),
+                Some(&format!("/p/{i}")),
+                "2026-01-01T00:00:00Z",
+            )
+        })
         .collect();
     assert_eq!(recent_projects(&[], &rows).len(), MAX_RECENT_PROJECTS);
 }
