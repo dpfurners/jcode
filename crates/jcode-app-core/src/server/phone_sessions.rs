@@ -413,6 +413,7 @@ pub(super) async fn build_sessions_event(
 
     let mut rows: Vec<SessionRow> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let on_disk: HashSet<String> = on_disk_session_ids().into_iter().collect();
 
     for (sid, agent_arc) in live_agents {
         // A busy agent holds its lock for the whole turn. Do not wait on it:
@@ -428,6 +429,16 @@ pub(super) async fn build_sessions_event(
             continue;
         }
         let previews = transcript_previews(&session.messages);
+        // A live session nobody has spoken to and that was never saved is a
+        // connection artefact: every `subscribe` without a target creates
+        // one (a tool-catalog probe, a client that attached and moved on),
+        // and the daemon retains it a while for reconnect grace. Listing it
+        // put a phantom idle row on every board within seconds of opening a
+        // tab. Once a user message or a save exists it is a real session.
+        if previews.1.is_none() && !on_disk.contains(&sid) {
+            seen.insert(sid.clone());
+            continue;
+        }
         let row = row_from_session(
             session,
             live_infos.get(&sid).cloned().unwrap_or_default(),
@@ -444,7 +455,7 @@ pub(super) async fn build_sessions_event(
     // On-disk stubs for everything else (including live-but-busy agents).
     let live_ids: HashSet<String> = ctx.sessions.read().await.keys().cloned().collect();
     let mut stub_rows: Vec<SessionRow> = Vec::new();
-    for sid in on_disk_session_ids() {
+    for sid in on_disk.iter().cloned() {
         if seen.contains(&sid) {
             continue;
         }
