@@ -40,10 +40,14 @@
     </array>
     <key>NSCameraUsageDescription</key>
     <string>Scan the QR code shown by `jcode pair` to connect to your server.</string>
+    <!-- Plain http to the user's own gateway over the tailnet (see
+         PRODUCTION_CHECKLIST.md, ATS justification). Only this key: when
+         NSAllowsLocalNetworking sits next to it, iOS applies the narrower
+         key and still rejects a 100.64.0.0/10 address as non-local, which
+         surfaced on a real phone as "App Transport Security policy
+         requires the use of a secure connection". -->
     <key>NSAppTransportSecurity</key>
     <dict>
-        <key>NSAllowsLocalNetworking</key>
-        <true/>
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>

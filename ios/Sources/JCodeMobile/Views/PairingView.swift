@@ -187,8 +187,14 @@ struct PairingView: View {
                 case .invalidResponse:
                     errorMessage = "Unexpected response from server"
                 }
+            } catch let error as URLError {
+                // The code that produced "could not reach" without saying
+                // why cost a morning: the phone is on the tailnet, the
+                // gateway answers curl, and the app just said no. Say
+                // what the OS said (timed out, refused, no route, ATS…).
+                errorMessage = "Could not reach \(gateway.host):\(gateway.port): \(error.localizedDescription) (\(error.code.rawValue))"
             } catch {
-                errorMessage = "Could not reach \(gateway.host):\(gateway.port)"
+                errorMessage = "Could not reach \(gateway.host):\(gateway.port): \(error.localizedDescription)"
             }
         }
     }
