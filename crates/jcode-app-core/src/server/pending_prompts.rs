@@ -194,7 +194,10 @@ mod tests {
             store.pending_prompt_for("s1").await.map(|p| p.request_id),
             Some("r1".to_string())
         );
-        assert_eq!(store.resolve("r1", "hello".into()).await.as_deref(), Some("s1"));
+        assert_eq!(
+            store.resolve("r1", "hello".into()).await.as_deref(),
+            Some("s1")
+        );
         assert_eq!(rx.await.unwrap(), "hello");
         assert!(store.pending_prompt_for("s1").await.is_none());
         assert!(store.resolve("r1", "again".into()).await.is_none());

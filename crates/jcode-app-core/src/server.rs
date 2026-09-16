@@ -586,8 +586,8 @@ async fn capture_runtime_memory_attribution_sample(
 
 mod state;
 
-use self::state::latest_peer_touches;
 pub use self::pending_prompts::{PendingPromptInfo, PendingPromptStore};
+use self::state::latest_peer_touches;
 pub use self::state::{
     FileAccess, SessionControlHandle, SharedContext, SwarmEvent, SwarmEventType, SwarmMember,
     SwarmState,

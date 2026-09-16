@@ -1464,3 +1464,314 @@ fn soft_interrupt_dispatch_starts_idle_session_and_queues_busy_session() {
     assert!(!should_start_idle_soft_interrupt(false, true, false));
     assert!(!should_start_idle_soft_interrupt(false, false, true));
 }
+
+/// Scripted provider: first turn calls `bash` with a command that blocks on
+/// stdin, second turn ends immediately.
+#[derive(Clone, Default)]
+struct StdinBashProvider {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for StdinBashProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let events = if call == 0 {
+            vec![
+                StreamEvent::ToolUseStart {
+                    id: "stdin_call".to_string(),
+                    name: "bash".to_string(),
+                },
+                StreamEvent::ToolInputDelta(
+                    r#"{"command":"read -r x; echo got:$x","timeout":20000}"#.to_string(),
+                ),
+                StreamEvent::ToolUseEnd,
+                StreamEvent::MessageEnd {
+                    stop_reason: Some("tool_use".to_string()),
+                },
+            ]
+        } else {
+            vec![
+                StreamEvent::TextDelta("done".to_string()),
+                StreamEvent::MessageEnd {
+                    stop_reason: Some("end_turn".to_string()),
+                },
+            ]
+        };
+        Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
+    }
+
+    fn name(&self) -> &str {
+        "stdin-bash"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+struct SharedHandleClientState {
+    sessions: SessionAgents,
+    global_session_id: Arc<RwLock<String>>,
+    client_count: Arc<RwLock<usize>>,
+    client_connections: Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
+    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    shared_context: Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
+    swarm_plans: Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
+    file_touch: FileTouchService,
+    channel_subscriptions: ChannelSubscriptions,
+    channel_subscriptions_by_session: ChannelSubscriptions,
+    client_debug_state: Arc<RwLock<ClientDebugState>>,
+    debug_response_tx: broadcast::Sender<(u64, String)>,
+    event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+    event_counter: Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: broadcast::Sender<SwarmEvent>,
+    global_event_tx: broadcast::Sender<ServerEvent>,
+    global_is_processing: Arc<RwLock<bool>>,
+    shutdown_signals: Arc<RwLock<HashMap<String, InterruptSignal>>>,
+    soft_interrupt_queues: SessionInterruptQueues,
+    mcp_pool: Arc<crate::mcp::SharedMcpPool>,
+    pending_prompts: crate::server::PendingPromptStore,
+}
+
+impl SharedHandleClientState {
+    fn new() -> Self {
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            global_session_id: Arc::new(RwLock::new(String::new())),
+            client_count: Arc::new(RwLock::new(0usize)),
+            client_connections: Arc::new(RwLock::new(HashMap::new())),
+            swarm_members: Arc::new(RwLock::new(HashMap::new())),
+            swarms_by_id: Arc::new(RwLock::new(HashMap::new())),
+            shared_context: Arc::new(RwLock::new(HashMap::new())),
+            swarm_plans: Arc::new(RwLock::new(HashMap::new())),
+            swarm_coordinators: Arc::new(RwLock::new(HashMap::new())),
+            file_touch: FileTouchService::new(),
+            channel_subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            channel_subscriptions_by_session: Arc::new(RwLock::new(HashMap::new())),
+            client_debug_state: Arc::new(RwLock::new(ClientDebugState::default())),
+            debug_response_tx: broadcast::channel(8).0,
+            event_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            event_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            swarm_event_tx: broadcast::channel(8).0,
+            global_event_tx: broadcast::channel(8).0,
+            global_is_processing: Arc::new(RwLock::new(false)),
+            shutdown_signals: Arc::new(RwLock::new(HashMap::new())),
+            soft_interrupt_queues: Arc::new(RwLock::new(HashMap::new())),
+            mcp_pool: Arc::new(crate::mcp::SharedMcpPool::from_default_config()),
+            pending_prompts: crate::server::PendingPromptStore::new(),
+        }
+    }
+
+    fn spawn_client(
+        &self,
+        provider: Arc<dyn Provider>,
+    ) -> (
+        tokio::task::JoinHandle<Result<()>>,
+        BufReader<crate::transport::ReadHalf>,
+        crate::transport::WriteHalf,
+    ) {
+        let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
+        let task = tokio::spawn(handle_client(
+            server_stream,
+            Arc::clone(&self.sessions),
+            self.global_event_tx.clone(),
+            provider,
+            Arc::clone(&self.global_is_processing),
+            Arc::clone(&self.global_session_id),
+            Arc::clone(&self.client_count),
+            Arc::clone(&self.client_connections),
+            Arc::clone(&self.swarm_members),
+            Arc::clone(&self.swarms_by_id),
+            Arc::clone(&self.shared_context),
+            Arc::clone(&self.swarm_plans),
+            Arc::clone(&self.swarm_coordinators),
+            self.file_touch.clone(),
+            Arc::clone(&self.channel_subscriptions),
+            Arc::clone(&self.channel_subscriptions_by_session),
+            Arc::clone(&self.client_debug_state),
+            self.debug_response_tx.clone(),
+            Arc::clone(&self.event_history),
+            Arc::clone(&self.event_counter),
+            self.swarm_event_tx.clone(),
+            "jcode-test".to_string(),
+            "🧪".to_string(),
+            Arc::clone(&self.mcp_pool),
+            Arc::clone(&self.shutdown_signals),
+            Arc::clone(&self.soft_interrupt_queues),
+            AwaitMembersRuntime::default(),
+            SwarmMutationRuntime::default(),
+            self.pending_prompts.clone(),
+        ));
+        let (reader, writer) = client_stream.into_split();
+        (task, BufReader::new(reader), writer)
+    }
+}
+
+async fn send_request(writer: &mut crate::transport::WriteHalf, request: &Request) {
+    let payload = serde_json::to_string(request).expect("serialize request") + "\n";
+    writer
+        .write_all(payload.as_bytes())
+        .await
+        .expect("write request");
+}
+
+async fn next_event(reader: &mut BufReader<crate::transport::ReadHalf>) -> ServerEvent {
+    let mut line = String::new();
+    let n = tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut line))
+        .await
+        .expect("timed out waiting for server event")
+        .expect("read server event");
+    assert!(n > 0, "server closed the connection");
+    decode_request_or_event(&line)
+}
+
+async fn wait_for_event(
+    reader: &mut BufReader<crate::transport::ReadHalf>,
+    mut pred: impl FnMut(&ServerEvent) -> bool,
+) -> ServerEvent {
+    loop {
+        let event = next_event(reader).await;
+        if pred(&event) {
+            return event;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_stdin_prompt_is_replayed_to_late_client_and_answerable_by_it() {
+    let _guard = jcode_base::storage::lock_test_env();
+    let _env = IsolatedReloadRecoveryEnv::new();
+    let state = SharedHandleClientState::new();
+    let provider: Arc<dyn Provider> = Arc::new(StdinBashProvider::default());
+    let working_dir = std::env::temp_dir()
+        .canonicalize()
+        .expect("temp dir")
+        .to_string_lossy()
+        .to_string();
+
+    // Client A: subscribe and start a turn that blocks bash on stdin.
+    let (task_a, mut reader_a, mut writer_a) = state.spawn_client(Arc::clone(&provider));
+    send_request(&mut writer_a, &subscribe_request(Some(&working_dir))).await;
+    let session = wait_for_event(&mut reader_a, |e| {
+        matches!(e, ServerEvent::SessionId { .. })
+    })
+    .await;
+    let ServerEvent::SessionId { session_id } = session else {
+        unreachable!()
+    };
+
+    send_request(
+        &mut writer_a,
+        &Request::Message {
+            id: 10,
+            content: "read stdin".to_string(),
+            images: Vec::new(),
+            system_reminder: None,
+            active_skill: None,
+            no_reply: false,
+        },
+    )
+    .await;
+    let request_a = wait_for_event(&mut reader_a, |e| {
+        matches!(e, ServerEvent::StdinRequest { .. })
+    })
+    .await;
+    let ServerEvent::StdinRequest {
+        request_id: request_id_a,
+        tool_call_id,
+        ..
+    } = request_a
+    else {
+        unreachable!()
+    };
+    assert_eq!(tool_call_id, "stdin_call");
+    assert_eq!(
+        state
+            .pending_prompts
+            .pending_prompt_for(&session_id)
+            .await
+            .map(|p| p.request_id),
+        Some(request_id_a.clone()),
+        "store should expose the pending prompt for list_sessions"
+    );
+
+    // Client B attaches to the same session AFTER the prompt was raised.
+    let (task_b, mut reader_b, mut writer_b) = state.spawn_client(Arc::clone(&provider));
+    let mut subscribe_b = subscribe_request(Some(&working_dir));
+    if let Request::Subscribe {
+        target_session_id,
+        id,
+        ..
+    } = &mut subscribe_b
+    {
+        *target_session_id = Some(session_id.clone());
+        *id = 2;
+    }
+    send_request(&mut writer_b, &subscribe_b).await;
+    let mut saw_history = false;
+    let request_b = wait_for_event(&mut reader_b, |e| {
+        saw_history |= matches!(e, ServerEvent::History { .. });
+        matches!(e, ServerEvent::StdinRequest { .. })
+    })
+    .await;
+    assert!(saw_history, "stdin_request must be replayed after history");
+    let ServerEvent::StdinRequest {
+        request_id: request_id_b,
+        ..
+    } = request_b
+    else {
+        unreachable!()
+    };
+    assert_eq!(request_id_b, request_id_a);
+
+    // B answers; A sees stdin_resolved and the tool output.
+    send_request(
+        &mut writer_b,
+        &Request::StdinResponse {
+            id: 3,
+            request_id: request_id_b.clone(),
+            input: "from-b".to_string(),
+        },
+    )
+    .await;
+    let mut saw_resolved = false;
+    let tool_done = wait_for_event(&mut reader_a, |e| {
+        saw_resolved |= matches!(
+            e,
+            ServerEvent::StdinResolved { request_id } if *request_id == request_id_a
+        );
+        matches!(e, ServerEvent::ToolDone { id, .. } if id == "stdin_call")
+    })
+    .await;
+    assert!(saw_resolved, "client A should receive stdin_resolved");
+    let ServerEvent::ToolDone { output, .. } = tool_done else {
+        unreachable!()
+    };
+    assert!(
+        output.contains("got:from-b"),
+        "tool output should contain the answer: {output}"
+    );
+    wait_for_event(&mut reader_a, |e| matches!(e, ServerEvent::Done { id: 10 })).await;
+    assert!(
+        state
+            .pending_prompts
+            .pending_prompt_for(&session_id)
+            .await
+            .is_none(),
+        "resolved prompt should leave the store"
+    );
+
+    drop(writer_a);
+    drop(writer_b);
+    let _ = tokio::time::timeout(Duration::from_secs(5), task_a).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), task_b).await;
+}
