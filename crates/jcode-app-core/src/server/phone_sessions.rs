@@ -295,12 +295,10 @@ fn row_from_session(
     swarm_role: Option<String>,
     provider: Option<String>,
     previews: (Option<String>, Option<String>),
+    pending_prompt: Option<PendingPromptInfo>,
 ) -> SessionRow {
     let streaming = streaming_since(&session.id);
     let turn_live = streaming.is_some() || live.is_processing;
-    // TODO(prompts): read from the per-session pending prompt store once the
-    // sibling branch lands it. Until then no session reports a prompt.
-    let pending_prompt: Option<PendingPromptInfo> = None;
     let last_error = status_error(&session.status);
     let phase = rank_phase(PhaseInputs {
         has_pending_prompt: pending_prompt.is_some(),
@@ -370,6 +368,10 @@ pub(super) struct ListSessionsContext<'a> {
     pub client_connections: &'a Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     pub soft_interrupt_queues: &'a SessionInterruptQueues,
     pub swarm_members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    /// The per-session stdin prompt store. `None` on paths that do not
+    /// carry it (the debug socket's `sessions` command), where every row
+    /// reports no prompt.
+    pub pending_prompts: Option<&'a super::PendingPromptStore>,
     pub server_name: &'a str,
     pub server_icon: &'a str,
 }
@@ -385,6 +387,10 @@ pub(super) async fn build_sessions_event(
 ) -> ServerEvent {
     let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).max(1);
     let live_infos = live_info_by_session(&*ctx.client_connections.read().await);
+    let prompts: HashMap<String, PendingPromptInfo> = match ctx.pending_prompts {
+        Some(store) => store.snapshot().await,
+        None => HashMap::new(),
+    };
     let members = ctx.swarm_members.read().await;
     let live_agents: Vec<(String, Arc<Mutex<Agent>>)> = ctx
         .sessions
@@ -447,6 +453,7 @@ pub(super) async fn build_sessions_event(
             role,
             Some(agent.provider_name()),
             previews,
+            prompts.get(&sid).cloned(),
         );
         seen.insert(sid);
         rows.push(row);
@@ -475,6 +482,7 @@ pub(super) async fn build_sessions_event(
             role,
             session.provider_key.clone(),
             (None, None),
+            prompts.get(&sid).cloned(),
         );
         stub_rows.push(row);
     }

@@ -92,6 +92,27 @@ impl PendingPromptStore {
     ///
     /// Used by subscribe/resume replay and by the `list_sessions`
     /// `pending_prompt` field so every reader sees the same store.
+    /// Every pending prompt, keyed by session id, in the wire's shape: what
+    /// `list_sessions` puts into each row's `pending_prompt`.
+    pub async fn snapshot(&self) -> HashMap<String, crate::protocol::PendingPromptInfo> {
+        self.inner
+            .read()
+            .await
+            .iter()
+            .map(|(sid, entry)| {
+                (
+                    sid.clone(),
+                    crate::protocol::PendingPromptInfo {
+                        request_id: entry.request_id.clone(),
+                        prompt: entry.prompt.clone(),
+                        is_password: entry.is_password,
+                        tool_call_id: Some(entry.tool_call_id.clone()),
+                    },
+                )
+            })
+            .collect()
+    }
+
     pub async fn pending_prompt_for(&self, session_id: &str) -> Option<PendingPromptInfo> {
         let map = self.inner.read().await;
         let entry = map.get(session_id)?;

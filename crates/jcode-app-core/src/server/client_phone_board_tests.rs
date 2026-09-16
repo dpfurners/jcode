@@ -134,6 +134,7 @@ impl Harness {
             Arc::new(RwLock::new(HashMap::new())),
             AwaitMembersRuntime::default(),
             SwarmMutationRuntime::default(),
+            crate::server::PendingPromptStore::new(),
         ));
         (client_stream, task)
     }

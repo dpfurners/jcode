@@ -123,6 +123,7 @@ pub(super) async fn maybe_handle_server_state_command(
                     client_connections,
                     soft_interrupt_queues,
                     swarm_members,
+                    pending_prompts: None,
                     server_name: &server_identity.name,
                     server_icon: &server_identity.icon,
                 },
