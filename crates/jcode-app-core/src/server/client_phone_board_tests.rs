@@ -238,6 +238,156 @@ async fn list_sessions_on_bare_connection_lists_disk_sessions_without_creating_o
     task.await.expect("join").expect("server task");
 }
 
+/// Write a session file by hand in the pre-`last_message_preview` format so
+/// the listing has to fall back to the full load for its preview.
+fn persist_legacy_session(id: &str, text: &str) {
+    let path = crate::session::session_path(id).expect("session path");
+    std::fs::create_dir_all(path.parent().unwrap()).expect("sessions dir");
+    let now = chrono::Utc::now();
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "id": id,
+            "parent_id": null,
+            "title": null,
+            "created_at": now,
+            "updated_at": now,
+            "working_dir": "/tmp/legacy",
+            "messages": [{
+                "id": "m1",
+                "role": "assistant",
+                "content": [{"type": "text", "text": text}]
+            }]
+        })
+        .to_string(),
+    )
+    .expect("write legacy session");
+}
+
+#[tokio::test]
+async fn list_sessions_prefers_stub_preview_and_falls_back_for_legacy_files() {
+    let _guard = crate::storage::lock_test_env();
+    let _home = IsolatedHome::new();
+    persist_session("session_stub_5_e", "/tmp/stub", None);
+    persist_legacy_session("session_legacy_6_f", "legacy answer");
+
+    // The stub row must not need the transcript: corrupt the messages on disk
+    // after saving so a full load would fail, then check the preview survives.
+    let stub_path = crate::session::session_path("session_stub_5_e").unwrap();
+    let raw = std::fs::read_to_string(&stub_path).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        value["last_message_preview"]["text"],
+        "hello from session_stub_5_e"
+    );
+    value["messages"] = serde_json::json!([{"broken": true}]);
+    std::fs::write(&stub_path, value.to_string()).unwrap();
+    assert!(crate::session::Session::load("session_stub_5_e").is_err());
+
+    let harness = Harness::new();
+    let (client, task) = harness.connect();
+    let event = roundtrip(
+        client,
+        &Request::ListSessions {
+            id: 8,
+            limit: None,
+            include_workers: false,
+        },
+    )
+    .await;
+    let ServerEvent::Sessions { sessions, .. } = event else {
+        panic!("expected sessions event, got {event:?}");
+    };
+    let by_id = |id: &str| sessions.iter().find(|s| s.id == id).expect(id);
+    let stub = by_id("session_stub_5_e")
+        .preview
+        .as_ref()
+        .expect("stub preview");
+    assert_eq!(stub.kind, "user");
+    assert_eq!(stub.text, "hello from session_stub_5_e");
+    let legacy = by_id("session_legacy_6_f")
+        .preview
+        .as_ref()
+        .expect("legacy fallback preview");
+    assert_eq!(legacy.kind, "assistant");
+    assert_eq!(legacy.text, "legacy answer");
+    task.await.expect("join").expect("server task");
+}
+
+/// 200 saved sessions with a bulky transcript each: listing the top 100 must
+/// answer from stubs alone, well under the phone's 5 s poll interval.
+#[tokio::test]
+async fn list_sessions_with_200_stub_sessions_answers_fast() {
+    let _guard = crate::storage::lock_test_env();
+    let _home = IsolatedHome::new();
+    let filler = "tool output line\n".repeat(2_000);
+    for i in 0..200 {
+        let id = format!("session_bulk_{i}_x");
+        let mut session = crate::session::Session::create_with_id(id.clone(), None, None);
+        session.working_dir = Some("/tmp/bulk".to_string());
+        for turn in 0..10 {
+            session.add_message(
+                crate::message::Role::User,
+                vec![crate::message::ContentBlock::Text {
+                    text: format!("turn {turn} {filler}"),
+                    cache_control: None,
+                }],
+            );
+            session.add_message(
+                crate::message::Role::Assistant,
+                vec![crate::message::ContentBlock::Text {
+                    text: format!("answer {turn} for {id}"),
+                    cache_control: None,
+                }],
+            );
+        }
+        session.save().expect("save bulk session");
+    }
+    let bytes: u64 = crate::server::phone_sessions::on_disk_session_ids()
+        .iter()
+        .map(|id| {
+            std::fs::metadata(crate::session::session_path(id).unwrap())
+                .map(|m| m.len())
+                .unwrap_or(0)
+        })
+        .sum();
+
+    let harness = Harness::new();
+    let (client, task) = harness.connect();
+    let started = std::time::Instant::now();
+    let event = roundtrip(
+        client,
+        &Request::ListSessions {
+            id: 9,
+            limit: Some(100),
+            include_workers: false,
+        },
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let ServerEvent::Sessions { sessions, .. } = event else {
+        panic!("expected sessions event, got {event:?}");
+    };
+    assert_eq!(sessions.len(), 100);
+    assert!(
+        sessions.iter().all(|s| s
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.kind == "assistant" && p.text.starts_with("answer 9 for "))),
+        "every row should carry the persisted last-message preview"
+    );
+    eprintln!(
+        "list_sessions limit=100 over 200 sessions ({} MB on disk): {:?}",
+        bytes / (1024 * 1024),
+        elapsed
+    );
+    assert!(
+        elapsed < Duration::from_millis(600),
+        "list_sessions took {elapsed:?}, expected < 600ms (measures ~65 ms alone; budget doubled for parallel test contention)"
+    );
+    task.await.expect("join").expect("server task");
+}
+
 #[tokio::test]
 async fn close_session_notifies_attached_client_and_unloads_agent() {
     let _guard = crate::storage::lock_test_env();

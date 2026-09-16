@@ -112,25 +112,16 @@ pub(super) fn truncate_preview(text: &str) -> String {
     out
 }
 
-/// Strip `<system-reminder>…</system-reminder>` blocks from user text so the
-/// preview never shows injected context.
-pub(super) fn strip_system_reminders(text: &str) -> String {
-    const OPEN: &str = "<system-reminder>";
-    const CLOSE: &str = "</system-reminder>";
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find(OPEN) {
-        out.push_str(&rest[..start]);
-        match rest[start..].find(CLOSE) {
-            Some(end) => rest = &rest[start + end + CLOSE.len()..],
-            None => {
-                rest = "";
-                break;
-            }
-        }
+pub(super) use crate::session::strip_system_reminders;
+
+/// Assistant/user candidates from the preview persisted in the session stub.
+/// The stub only records the last text message, so exactly one slot is set.
+fn stub_previews(session: &Session) -> (Option<String>, Option<String>) {
+    match &session.last_message_preview {
+        Some(preview) if preview.role == Role::Assistant => (Some(preview.text.clone()), None),
+        Some(preview) => (None, Some(preview.text.clone())),
+        None => (None, None),
     }
-    out.push_str(rest);
-    out.trim().to_string()
 }
 
 fn message_text(message: &StoredMessage) -> String {
@@ -265,10 +256,13 @@ fn streaming_since(session_id: &str) -> Option<std::time::SystemTime> {
 }
 
 #[derive(Debug, Clone, Default)]
-struct LiveInfo {
+pub(super) struct LiveInfo {
     is_processing: bool,
     current_tool: Option<String>,
     client_count: usize,
+    /// A client that identified itself (`client_instance_id`): a real
+    /// front end holding a tab, as opposed to a one-shot probe.
+    has_named_client: bool,
 }
 
 /// Per-session aggregate of the attached client connections.
@@ -280,11 +274,22 @@ fn live_info_by_session(
         let info = out.entry(conn.session_id.clone()).or_default();
         info.client_count += 1;
         info.is_processing |= conn.is_processing;
+        info.has_named_client |= conn.client_instance_id.is_some();
         if info.current_tool.is_none() {
             info.current_tool = conn.current_tool_name.clone();
         }
     }
     out
+}
+
+/// A live session with no user message, no file on disk and no client that
+/// named itself is a connection artefact and stays off the board.
+pub(super) fn is_connection_artefact(
+    has_user_message: bool,
+    on_disk: bool,
+    live: &LiveInfo,
+) -> bool {
+    !has_user_message && !on_disk && !live.has_named_client
 }
 
 fn row_from_session(
@@ -375,8 +380,9 @@ pub(super) struct ListSessionsContext<'a> {
 }
 
 /// Build the `sessions` event. Live agents win over on-disk stubs. Previews
-/// for non-live rows are read from the full session file only for the top
-/// `limit` rows (the stub does not carry messages).
+/// for non-live rows come from the stub's persisted `last_message_preview`;
+/// only legacy stubs without one fall back to the full session file, and only
+/// for the top `limit` rows.
 pub(super) async fn build_sessions_event(
     id: u64,
     limit: Option<usize>,
@@ -429,19 +435,22 @@ pub(super) async fn build_sessions_event(
             continue;
         }
         let previews = transcript_previews(&session.messages);
-        // A live session nobody has spoken to and that was never saved is a
-        // connection artefact: every `subscribe` without a target creates
-        // one (a tool-catalog probe, a client that attached and moved on),
-        // and the daemon retains it a while for reconnect grace. Listing it
-        // put a phantom idle row on every board within seconds of opening a
-        // tab. Once a user message or a save exists it is a real session.
-        if previews.1.is_none() && !on_disk.contains(&sid) {
+        // A live session nobody has spoken to, never saved and held by no
+        // client that named itself is a connection artefact: every
+        // `subscribe` without a target creates one (Jed's tool-catalog
+        // probe, a script that attached and moved on), and the daemon keeps
+        // it a while for reconnect grace. Listing it put a phantom idle row
+        // on every board seconds after a tab opened. A fresh tab in Jed or
+        // the phone is empty too, but its client sends `client_instance_id`,
+        // which is what keeps it on the board.
+        let live = live_infos.get(&sid).cloned().unwrap_or_default();
+        if is_connection_artefact(previews.1.is_some(), on_disk.contains(&sid), &live) {
             seen.insert(sid.clone());
             continue;
         }
         let row = row_from_session(
             session,
-            live_infos.get(&sid).cloned().unwrap_or_default(),
+            live,
             true,
             queued_for(&sid),
             role,
@@ -455,26 +464,26 @@ pub(super) async fn build_sessions_event(
     // On-disk stubs for everything else (including live-but-busy agents).
     let live_ids: HashSet<String> = ctx.sessions.read().await.keys().cloned().collect();
     let mut stub_rows: Vec<SessionRow> = Vec::new();
-    for sid in on_disk.iter().cloned() {
-        if seen.contains(&sid) {
+    for sid in on_disk.iter() {
+        if seen.contains(sid) {
             continue;
         }
-        let Ok(session) = Session::load_startup_stub(&sid) else {
+        let Ok(session) = Session::load_startup_stub(sid) else {
             continue;
         };
-        let role = swarm_role_of(members.get(&sid));
+        let role = swarm_role_of(members.get(sid));
         if !is_wanted(&session, &role) {
             continue;
         }
-        let is_live = live_ids.contains(&sid);
+        let is_live = live_ids.contains(sid);
         let row = row_from_session(
             &session,
-            live_infos.get(&sid).cloned().unwrap_or_default(),
+            live_infos.get(sid).cloned().unwrap_or_default(),
             is_live,
-            queued_for(&sid),
+            queued_for(sid),
             role,
             session.provider_key.clone(),
-            (None, None),
+            stub_previews(&session),
         );
         stub_rows.push(row);
     }
@@ -485,9 +494,13 @@ pub(super) async fn build_sessions_event(
     rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     rows.truncate(limit);
 
-    // Preview cost: rows built from stubs have no transcript. Load the full
-    // session file for those top rows only.
+    // Preview cost: stubs saved before `last_message_preview` existed carry no
+    // preview. Fall back to the full session file for those top rows only.
     for row in rows.iter_mut().filter(|r| r.preview.is_none()) {
+        crate::logging::debug(&format!(
+            "list_sessions: stub for {} has no persisted preview; loading full session",
+            row.id
+        ));
         if let Ok(session) = Session::load(&row.id) {
             let previews = transcript_previews(&session.messages);
             row.preview = pick_preview(PreviewCandidates {
