@@ -1096,6 +1096,25 @@ fn default_true() -> bool {
     true
 }
 
+/// Skill resolution configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Resolve every `/name` mention at a word start in a user message against
+    /// the installed skills and inject each SKILL.md body into that turn's
+    /// system reminder, in addition to the client-selected `active_skill`
+    /// (default: true).
+    pub inline_mentions: bool,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            inline_mentions: true,
+        }
+    }
+}
+
 /// Runtime feature toggles
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

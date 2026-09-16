@@ -93,6 +93,7 @@ impl Agent {
             );
         }
 
+        let system_reminder = self.with_inline_skill_mentions(user_message, system_reminder);
         self.current_turn_system_reminder =
             system_reminder.filter(|value| !value.trim().is_empty());
 
@@ -105,6 +106,32 @@ impl Agent {
         self.current_turn_system_reminder = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
         result
+    }
+
+    /// Resolve every `/skill` mentioned at a word start in `user_message`
+    /// (excluding the active skill) and append the skill bodies to the turn's
+    /// system reminder. Gated by `[skills] inline_mentions`.
+    pub(crate) fn with_inline_skill_mentions(
+        &self,
+        user_message: &str,
+        system_reminder: Option<String>,
+    ) -> Option<String> {
+        if !crate::config::config().skills.inline_mentions || !user_message.contains('/') {
+            return system_reminder;
+        }
+        use jcode_base::skill::mentions;
+        let skills = self.current_skills_snapshot();
+        let names = mentions::mentioned_skills(user_message, &skills, self.active_skill.as_deref());
+        if names.is_empty() {
+            return system_reminder;
+        }
+        logging::info(&format!(
+            "Injecting {} inline skill mention(s): {}",
+            names.len(),
+            names.join(", ")
+        ));
+        let sections = mentions::render_mentioned_sections(&names, &skills);
+        mentions::merge_into_system_reminder(system_reminder, sections)
     }
 
     /// Append and persist a user message without starting a model turn.

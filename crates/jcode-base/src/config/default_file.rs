@@ -295,6 +295,12 @@ kv_cache_miss_notices = true
 # Set to "main" for bleeding edge updates every time code is pushed
 update_channel = "stable"
 
+[skills]
+# Resolve every `/name` mention at a word start in a message against the
+# installed skills and inject each SKILL.md body into that turn's system
+# reminder (in addition to the client-selected active skill).
+inline_mentions = true
+
 [websearch]
 # Preferred websearch engine: "duckduckgo", "bing", or "searxng".
 engine = "duckduckgo"

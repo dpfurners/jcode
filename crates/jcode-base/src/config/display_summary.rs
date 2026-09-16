@@ -76,6 +76,9 @@ impl Config {
 - KV cache miss notices: {}
 - Update channel: {}
 
+**Skills:**
+- Inline mentions: {}
+
 **Tools:**
 - Profile: {}
 - Enabled allow-list: {}
@@ -230,6 +233,7 @@ impl Config {
             self.features.persist_memory_injections,
             self.features.kv_cache_miss_notices,
             self.features.update_channel,
+            self.skills.inline_mentions,
             if self.tools.profile.trim().is_empty() {
                 "full"
             } else {

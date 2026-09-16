@@ -2227,3 +2227,115 @@ async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
         "{text:?}"
     );
 }
+
+#[derive(Clone, Default)]
+struct SystemCapturingProvider {
+    systems: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl Provider for SystemCapturingProvider {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        // The dynamic system part (system reminder) is delivered through the
+        // message list by the default `complete_split`, so capture both.
+        let mut request = system.to_string();
+        for message in messages {
+            for block in &message.content {
+                if let crate::message::ContentBlock::Text { text, .. } = block {
+                    request.push('\n');
+                    request.push_str(text);
+                }
+            }
+        }
+        self.systems.lock().unwrap().push(request);
+        let (tx, rx) = tokio_mpsc::channel::<Result<StreamEvent>>(4);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("end_turn".to_string()),
+                }))
+                .await;
+        });
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+
+    fn name(&self) -> &str {
+        "system-capturing"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+fn write_stub_skill(home: &std::path::Path, name: &str, body: &str) {
+    let dir = home.join("skills").join(name);
+    std::fs::create_dir_all(&dir).expect("skill dir");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {name} stub\n---\n{body}\n"),
+    )
+    .expect("write SKILL.md");
+}
+
+#[tokio::test]
+async fn inline_skill_mentions_reach_the_provider_system_prompt() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp_home = tempfile::TempDir::new().expect("temp home");
+    crate::env::set_var("JCODE_HOME", temp_home.path());
+    crate::config::Config::invalidate_cache();
+    write_stub_skill(temp_home.path(), "alpha-skill", "ALPHA_SKILL_BODY_MARKER");
+    write_stub_skill(temp_home.path(), "beta_skill", "BETA_SKILL_BODY_MARKER");
+
+    let capturing = SystemCapturingProvider::default();
+    let systems = capturing.systems.clone();
+    let provider: Arc<dyn Provider> = Arc::new(capturing);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    assert!(
+        agent
+            .available_skill_names()
+            .contains(&"alpha-skill".to_string()),
+        "stub skills should be installed: {:?}",
+        agent.available_skill_names()
+    );
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    agent
+        .run_once_streaming_mpsc(
+            "use /alpha-skill and /beta_skill but not src/alpha-skill",
+            Vec::new(),
+            Some("EXISTING_REMINDER".to_string()),
+            tx,
+        )
+        .await
+        .expect("turn should complete");
+
+    let system = systems.lock().unwrap().join("\n");
+    assert!(system.contains("EXISTING_REMINDER"), "client reminder kept");
+    assert!(
+        system.contains("## Skill: /alpha-skill"),
+        "alpha section: {system}"
+    );
+    assert!(system.contains("ALPHA_SKILL_BODY_MARKER"), "alpha body");
+    assert!(system.contains("## Skill: /beta_skill"), "beta section");
+    assert!(system.contains("BETA_SKILL_BODY_MARKER"), "beta body");
+    assert!(
+        agent.current_turn_system_reminder.is_none(),
+        "reminder is per turn"
+    );
+
+    if let Some(previous) = prev_home {
+        crate::env::set_var("JCODE_HOME", previous);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+    crate::config::Config::invalidate_cache();
+}

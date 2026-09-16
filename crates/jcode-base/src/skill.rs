@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
 mod invocation;
+pub mod mentions;
 pub use invocation::SkillInvocation;
 
 /// A skill definition from SKILL.md
@@ -544,6 +545,11 @@ impl SkillRegistry {
         let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml)?;
 
         Ok((frontmatter, body))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(&mut self, skill: Skill) {
+        self.skills.insert(skill.name.clone(), skill);
     }
 
     /// Get a skill by name

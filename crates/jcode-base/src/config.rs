@@ -11,7 +11,7 @@ pub use jcode_config_types::{
     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
+    SkillsConfig, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
     WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
@@ -485,6 +485,9 @@ pub struct Config {
 
     /// Web search tool configuration
     pub websearch: WebSearchConfig,
+
+    /// Skill resolution (inline `/skill` mentions)
+    pub skills: SkillsConfig,
 
     /// Built-in tool exposure configuration
     pub tools: ToolConfig,
