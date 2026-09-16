@@ -88,6 +88,84 @@ fn required_subscribe_working_dir(working_dir: Option<&str>) -> std::result::Res
     Ok(working_dir)
 }
 
+pub(super) struct PhoneBoardContext<'a> {
+    pub(super) sessions: &'a SessionAgents,
+    pub(super) client_connections: &'a Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
+    pub(super) soft_interrupt_queues: &'a SessionInterruptQueues,
+    pub(super) swarm_members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    pub(super) shutdown_signals: &'a Arc<RwLock<HashMap<String, InterruptSignal>>>,
+    pub(super) server_name: &'a str,
+    pub(super) server_icon: &'a str,
+}
+
+/// Handle `list_sessions`, `close_session` and `search_files`. Returns
+/// `None` for any other request. `default_working_dir` is the attached
+/// session's directory, or `None` on a bare connection.
+pub(super) async fn handle_phone_board_request(
+    request: &Request,
+    default_working_dir: Option<&str>,
+    ctx: &PhoneBoardContext<'_>,
+) -> Option<ServerEvent> {
+    use super::phone_sessions::{
+        CloseSessionContext, ListSessionsContext, build_file_matches_event,
+        build_sessions_event, close_session,
+    };
+    match request {
+        Request::ListSessions {
+            id,
+            limit,
+            include_workers,
+        } => Some(
+            build_sessions_event(
+                *id,
+                *limit,
+                *include_workers,
+                ListSessionsContext {
+                    sessions: ctx.sessions,
+                    client_connections: ctx.client_connections,
+                    soft_interrupt_queues: ctx.soft_interrupt_queues,
+                    swarm_members: ctx.swarm_members,
+                    server_name: ctx.server_name,
+                    server_icon: ctx.server_icon,
+                },
+            )
+            .await,
+        ),
+        Request::CloseSession {
+            id,
+            session_id,
+            delete,
+        } => Some(
+            close_session(
+                *id,
+                session_id,
+                *delete,
+                CloseSessionContext {
+                    sessions: ctx.sessions,
+                    shutdown_signals: ctx.shutdown_signals,
+                    soft_interrupt_queues: ctx.soft_interrupt_queues,
+                    swarm_members: ctx.swarm_members,
+                },
+            )
+            .await,
+        ),
+        Request::SearchFiles {
+            id,
+            query,
+            limit,
+            dirs_only,
+            working_dir,
+        } => Some(build_file_matches_event(
+            *id,
+            query,
+            *limit,
+            *dirs_only,
+            working_dir.as_deref().or(default_working_dir),
+        )),
+        _ => None,
+    }
+}
+
 fn initial_subscribe_working_dir(request: &Request) -> std::result::Result<String, String> {
     match request {
         Request::Subscribe {
@@ -488,6 +566,28 @@ pub(super) async fn handle_client(
 
         match decode_request(&line) {
             Ok(request) => {
+                // Session-board requests work on a bare connection and must
+                // not create a session (docs/PHONE-WIRE.md). `search_files`
+                // needs an explicit working_dir here since there is no
+                // session to default from.
+                if let Some(event) = handle_phone_board_request(
+                    &request,
+                    None,
+                    &PhoneBoardContext {
+                        sessions: &sessions,
+                        client_connections: &client_connections,
+                        soft_interrupt_queues: &soft_interrupt_queues,
+                        swarm_members: &swarm_members,
+                        shutdown_signals: &shutdown_signals,
+                        server_name: &server_name,
+                        server_icon: &server_icon,
+                    },
+                )
+                .await
+                {
+                    write_direct_event(&writer, &event).await?;
+                    continue;
+                }
                 if request.is_lightweight_control_request() {
                     let keep_connection_open = matches!(request, Request::Ping { .. });
                     handle_lightweight_control_request(
@@ -1539,6 +1639,38 @@ pub(super) async fn handle_client(
                 let mut w = writer.lock().await;
                 if w.write_all(json.as_bytes()).await.is_err() {
                     break;
+                }
+            }
+
+            Request::ListSessions { .. }
+            | Request::CloseSession { .. }
+            | Request::SearchFiles { .. } => {
+                let session_working_dir = {
+                    let sessions_guard = sessions.read().await;
+                    match sessions_guard.get(&client_session_id) {
+                        Some(agent_arc) => agent_arc
+                            .try_lock()
+                            .ok()
+                            .and_then(|agent| agent.working_dir().map(str::to_string)),
+                        None => None,
+                    }
+                };
+                if let Some(event) = handle_phone_board_request(
+                    &request,
+                    session_working_dir.as_deref(),
+                    &PhoneBoardContext {
+                        sessions: &sessions,
+                        client_connections: &client_connections,
+                        soft_interrupt_queues: &soft_interrupt_queues,
+                        swarm_members: &swarm_members,
+                        shutdown_signals: &shutdown_signals,
+                        server_name: &server_name,
+                        server_icon: &server_icon,
+                    },
+                )
+                .await
+                {
+                    let _ = client_event_tx.send(event);
                 }
             }
 
@@ -3624,3 +3756,7 @@ mod tests;
 #[cfg(test)]
 #[path = "client_target_attach_tests.rs"]
 mod target_attach_tests;
+
+#[cfg(test)]
+#[path = "client_phone_board_tests.rs"]
+mod phone_board_tests;
