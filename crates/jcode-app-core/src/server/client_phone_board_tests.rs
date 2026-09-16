@@ -153,10 +153,19 @@ async fn roundtrip(client: crate::transport::Stream, request: &Request) -> Serve
     serde_json::from_str(line.trim()).expect("decode server event")
 }
 
+/// Persist a session with one visible user message (an empty untitled
+/// session is intentionally never written to disk).
 fn persist_session(id: &str, working_dir: &str, title: Option<&str>) {
     let mut session = crate::session::Session::create_with_id(id.to_string(), None, None);
     session.working_dir = Some(working_dir.to_string());
     session.title = title.map(str::to_string);
+    session.add_message(
+        crate::message::Role::User,
+        vec![crate::message::ContentBlock::Text {
+            text: format!("hello from {id} <system-reminder>hidden</system-reminder>"),
+            cache_control: None,
+        }],
+    );
     session.save().expect("save session");
 }
 
@@ -172,6 +181,7 @@ async fn list_sessions_on_bare_connection_lists_disk_sessions_without_creating_o
         Some("session_alpha_1_a".to_string()),
         None,
     );
+    child.working_dir = Some("/tmp/alpha".to_string());
     child.save().expect("save child");
 
     let harness = Harness::new();
@@ -210,12 +220,15 @@ async fn list_sessions_on_bare_connection_lists_disk_sessions_without_creating_o
     assert_eq!(alpha.phase, "idle");
     assert!(!alpha.is_live);
     assert!(alpha.pending_prompt.is_none());
+    let preview = alpha.preview.as_ref().expect("preview from transcript");
+    assert_eq!(preview.kind, "user");
+    assert_eq!(preview.text, "hello from session_alpha_1_a");
     let paths: Vec<&str> = recent_projects.iter().map(|p| p.path.as_str()).collect();
     assert!(paths.contains(&"/tmp/alpha") && paths.contains(&"/tmp/beta"), "{paths:?}");
 
     // No throwaway session was created in memory or on disk.
     assert!(harness.sessions.read().await.is_empty());
-    assert_eq!(super::phone_sessions::on_disk_session_ids().len(), 3);
+    assert_eq!(crate::server::phone_sessions::on_disk_session_ids().len(), 3);
     assert!(!harness.forked.load(Ordering::SeqCst));
     task.await.expect("join").expect("server task");
 }
