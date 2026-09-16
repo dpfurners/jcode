@@ -97,6 +97,11 @@ public struct SessionState: Equatable, Sendable {
     /// Populated from `session_renamed` broadcasts and history payloads.
     public var sessionTitles: [String: String]
     public var isProcessing: Bool
+    /// True while the live turn is one this client did not start: another
+    /// client's message, or a turn already running when we attached. Such a
+    /// turn only ever streams its tail to us (and never the other client's
+    /// user message), so the app re-reads history when it ends.
+    public var isAdoptedTurn: Bool
     public var isReasoning: Bool
     public var modelName: String?
     public var providerName: String?
@@ -134,6 +139,7 @@ public struct SessionState: Equatable, Sendable {
         allSessions = []
         sessionTitles = [:]
         isProcessing = false
+        isAdoptedTurn = false
         isReasoning = false
         modelName = nil
         providerName = nil
@@ -194,6 +200,7 @@ public enum SessionReducer {
         case .userSentMessage(let text):
             state.transcript.append(TranscriptEntry(role: .user, text: text))
             state.isProcessing = true
+            state.isAdoptedTurn = false
             state.errorBanner = nil
         case .userQueuedInterrupt(let text):
             state.transcript.append(TranscriptEntry(role: .user, text: text, isQueued: true))
@@ -253,9 +260,11 @@ public enum SessionReducer {
         var state = state
         switch event {
         case .textDelta(let text):
+            adoptRunningTurn(&state)
             withStreamingAssistant(&state) { $0.text += text }
 
         case .reasoningDelta(let text):
+            adoptRunningTurn(&state)
             state.isReasoning = true
             withStreamingAssistant(&state) { $0.reasoning += text }
 
@@ -266,32 +275,42 @@ public enum SessionReducer {
             withStreamingAssistant(&state) { $0.text = text }
 
         case .toolStart(let id, let name):
+            adoptRunningTurn(&state)
             withStreamingAssistant(&state) { entry in
                 entry.toolCalls.append(.init(id: id, name: name))
             }
 
+        // The daemon ends the assistant *message* (`message_end`) when the
+        // model stops to call a tool, then runs the tool and reports
+        // `tool_exec`/`tool_done` for a call that now lives in an entry that
+        // is no longer streaming. Looking only at the trailing streaming
+        // entry opened a second assistant row for the finished call, so the
+        // phone showed two rows where the daemon's history has one. Calls
+        // are therefore located by id across the whole transcript, the way
+        // the macOS client does.
         case .toolInput(let delta):
-            withStreamingAssistant(&state) { entry in
-                if !entry.toolCalls.isEmpty {
-                    entry.toolCalls[entry.toolCalls.count - 1].input += delta
-                }
+            if let location = lastStreamingInputToolCall(in: state) {
+                state.transcript[location.entry].toolCalls[location.call].input += delta
             }
 
         case .toolExec(let id, let name):
-            withStreamingAssistant(&state) { entry in
-                if let index = entry.toolCalls.firstIndex(where: { $0.id == id }) {
-                    entry.toolCalls[index].status = .running
-                } else {
+            adoptRunningTurn(&state)
+            if let location = locateToolCall(id: id, in: state) {
+                state.transcript[location.entry].toolCalls[location.call].status = .running
+            } else {
+                withStreamingAssistant(&state) { entry in
                     entry.toolCalls.append(.init(id: id, name: name, status: .running))
                 }
             }
 
         case .toolDone(let id, let name, let output, let error):
-            withStreamingAssistant(&state) { entry in
-                if let index = entry.toolCalls.firstIndex(where: { $0.id == id }) {
-                    entry.toolCalls[index].output = output
-                    entry.toolCalls[index].status = error.map { .failed($0) } ?? .succeeded
-                } else {
+            adoptRunningTurn(&state)
+            if let location = locateToolCall(id: id, in: state) {
+                state.transcript[location.entry].toolCalls[location.call].output = output
+                state.transcript[location.entry].toolCalls[location.call].status =
+                    error.map { .failed($0) } ?? .succeeded
+            } else {
+                withStreamingAssistant(&state) { entry in
                     entry.toolCalls.append(
                         .init(
                             id: id, name: name, output: output,
@@ -320,6 +339,7 @@ public enum SessionReducer {
 
         case .done:
             state.isProcessing = false
+            state.isAdoptedTurn = false
             state.isReasoning = false
             state.serverPhase = nil
             state.pendingPrompt = nil
@@ -421,7 +441,7 @@ public enum SessionReducer {
             // A tool blocked on input means the turn is live even if no
             // `state` event said so (replay after attach).
             state.pendingPrompt = prompt
-            state.isProcessing = true
+            adoptRunningTurn(&state)
 
         case .stdinResolved(let requestID):
             if state.pendingPrompt?.requestID == requestID {
@@ -532,6 +552,42 @@ public enum SessionReducer {
     }
 
     /// Mutates the trailing streaming assistant entry, creating it if needed.
+    /// A streamed fragment for a turn we never marked as started means the
+    /// turn belongs to someone else; note that so the app can catch up on
+    /// the parts that were never streamed to us once it ends.
+    private static func adoptRunningTurn(_ state: inout SessionState) {
+        guard !state.isProcessing else { return }
+        state.isProcessing = true
+        state.isAdoptedTurn = true
+    }
+
+    private typealias ToolCallLocation = (entry: Int, call: Int)
+
+    /// The newest call with this id anywhere in the transcript: a finished
+    /// call is reported after its entry stopped streaming.
+    private static func locateToolCall(id: String, in state: SessionState) -> ToolCallLocation? {
+        for entryIndex in state.transcript.indices.reversed() {
+            if let callIndex = state.transcript[entryIndex].toolCalls.lastIndex(where: {
+                $0.id == id
+            }) {
+                return (entryIndex, callIndex)
+            }
+        }
+        return nil
+    }
+
+    /// The most recent call still accumulating streamed input, which is the
+    /// only sink `tool_input` deltas can refer to (they carry no id).
+    private static func lastStreamingInputToolCall(in state: SessionState) -> ToolCallLocation? {
+        for entryIndex in state.transcript.indices.reversed() {
+            let calls = state.transcript[entryIndex].toolCalls
+            guard let callIndex = calls.indices.last else { continue }
+            guard calls[callIndex].status == .streamingInput else { return nil }
+            return (entryIndex, callIndex)
+        }
+        return nil
+    }
+
     private static func withStreamingAssistant(
         _ state: inout SessionState, _ mutate: (inout TranscriptEntry) -> Void
     ) {

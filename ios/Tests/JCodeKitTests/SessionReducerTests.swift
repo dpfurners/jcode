@@ -107,6 +107,47 @@ private func event(_ line: String) -> ConnectionOutput {
     #expect(state.transcript[0].toolCalls[0].output == "file.txt")
 }
 
+@Test func toolFinishedAfterMessageEndStaysInItsEntry() {
+    // The daemon ends the assistant message when the model stops to call a
+    // tool, then runs the tool: tool_exec/tool_done arrive for an entry that
+    // is no longer streaming. They must update that call, not open a second
+    // assistant row (seen live: the phone showed two rows for one turn).
+    let state = run([
+        event(#"{"type":"reasoning_delta","text":"thinking"}"#),
+        event(#"{"type":"tool_start","id":"t1","name":"bash"}"#),
+        event(#"{"type":"tool_input","delta":"{\"command\":\"read x\"}"}"#),
+        event(#"{"type":"message_end"}"#),
+        event(#"{"type":"tool_exec","id":"t1","name":"bash"}"#),
+        event(#"{"type":"tool_done","id":"t1","name":"bash","output":"got:avocado"}"#),
+        event(#"{"type":"text_delta","text":"mango"}"#),
+        event(#"{"type":"message_end"}"#),
+    ])
+    let assistant = state.transcript.filter { $0.role == .assistant }
+    #expect(assistant.count == 2)
+    #expect(assistant[0].toolCalls.count == 1)
+    #expect(assistant[0].toolCalls[0].status == .succeeded)
+    #expect(assistant[0].toolCalls[0].output == "got:avocado")
+    #expect(assistant[1].toolCalls.isEmpty)
+    #expect(assistant[1].text == "mango")
+}
+
+@Test func turnStartedElsewhereIsAdoptedUntilDone() {
+    // A fragment for a turn we never started marks the turn as adopted, so
+    // the app knows to re-read history when it ends (the other client's
+    // user message was never streamed to us).
+    var state = run([event(#"{"type":"text_delta","text":"hi"}"#)])
+    #expect(state.isProcessing)
+    #expect(state.isAdoptedTurn)
+    state = run([event(#"{"type":"done","id":1}"#)], from: state)
+    #expect(!state.isProcessing)
+    #expect(!state.isAdoptedTurn)
+
+    // Our own message is never "adopted".
+    let ours = SessionReducer.reduce(SessionState(), intent: .userSentMessage("go"))
+    #expect(ours.isProcessing)
+    #expect(!ours.isAdoptedTurn)
+}
+
 @Test func toolFailureRecorded() {
     let state = run([
         event(#"{"type":"tool_start","id":"t1","name":"bash"}"#),

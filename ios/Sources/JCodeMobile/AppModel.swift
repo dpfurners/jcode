@@ -155,9 +155,16 @@ final class AppModel {
             let stream = await connection.start(resumeSessionID: sessionID, workingDir: workingDir)
             for await output in stream {
                 guard let self else { return }
+                let wasAdopted = self.session.isProcessing && self.session.isAdoptedTurn
                 self.session = SessionReducer.reduce(self.session, output)
                 if case .event(let event) = output {
                     self.consumeFileMatches(event)
+                }
+                // A turn another client drove only streamed its tail here and
+                // never its user message; the daemon writes the complete
+                // transcript when the turn ends, so re-read it now.
+                if wasAdopted, !self.session.isProcessing {
+                    self.send { .getHistory(id: $0) }
                 }
             }
         }
