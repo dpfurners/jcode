@@ -717,7 +717,7 @@ pub(super) fn search_absolute(query: &str, limit: usize, dirs_only: bool) -> Vec
 }
 
 /// Build the `file_matches` event. `working_dir` must already be resolved.
-pub(super) fn build_file_matches_event(
+pub(super) async fn build_file_matches_event(
     id: u64,
     query: &str,
     limit: Option<usize>,
@@ -748,7 +748,15 @@ pub(super) fn build_file_matches_event(
             retry_after_secs: None,
         };
     }
-    let matches = tokio::task::block_in_place(|| search_relative(root, query, limit, dirs_only));
+    // The walk is filesystem-bound and budgeted at 500 ms; keep it off the
+    // async workers so a slow disk never stalls other connections.
+    let root = root.to_path_buf();
+    let owned_query = query.to_string();
+    let matches = tokio::task::spawn_blocking(move || {
+        search_relative(&root, &owned_query, limit, dirs_only)
+    })
+    .await
+    .unwrap_or_default();
     ServerEvent::FileMatches {
         id,
         query: query.to_string(),

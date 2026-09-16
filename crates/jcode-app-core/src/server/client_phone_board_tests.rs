@@ -169,7 +169,7 @@ fn persist_session(id: &str, working_dir: &str, title: Option<&str>) {
     session.save().expect("save session");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn list_sessions_on_bare_connection_lists_disk_sessions_without_creating_one() {
     let _guard = crate::storage::lock_test_env();
     let _home = IsolatedHome::new();
@@ -233,7 +233,7 @@ async fn list_sessions_on_bare_connection_lists_disk_sessions_without_creating_o
     task.await.expect("join").expect("server task");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn close_session_notifies_attached_client_and_unloads_agent() {
     let _guard = crate::storage::lock_test_env();
     let _home = IsolatedHome::new();
@@ -348,7 +348,7 @@ async fn close_session_notifies_attached_client_and_unloads_agent() {
     task.await.expect("join").expect("server task");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn search_files_on_bare_connection_honours_gitignore() {
     let _guard = crate::storage::lock_test_env();
     let _home = IsolatedHome::new();

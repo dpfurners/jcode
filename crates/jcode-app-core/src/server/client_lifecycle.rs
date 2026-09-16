@@ -155,13 +155,16 @@ pub(super) async fn handle_phone_board_request(
             limit,
             dirs_only,
             working_dir,
-        } => Some(build_file_matches_event(
-            *id,
-            query,
-            *limit,
-            *dirs_only,
-            working_dir.as_deref().or(default_working_dir),
-        )),
+        } => Some(
+            build_file_matches_event(
+                *id,
+                query,
+                *limit,
+                *dirs_only,
+                working_dir.as_deref().or(default_working_dir),
+            )
+            .await,
+        ),
         _ => None,
     }
 }
