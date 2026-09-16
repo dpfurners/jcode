@@ -47,13 +47,42 @@ built against on this machine, without a device, network, or provider cost.
     routes through the same handler as `onOpenURL`. Release builds do not
     compile the poller. `JCODE_USE_OPENURL=1 attach.sh …` uses `simctl
     openurl` instead (interactive).
-  - `answer_prompt.sh <device> <request_id> <text>` answers the pending
-    prompt via `jcode://debug/answer?request_id=…&text=…` (DEBUG only), the
-    same `stdin_response` path as the prompt card's Send. An empty
-    request_id skips the id check.
-  - `type_composer.sh <device> <text>` sets the composer draft via
-    `jcode://debug/compose?text=…` (DEBUG only), so `/…` and `@…` open the
-    completion popup exactly as if typed.
+  - `read_sync_dump.sh <device>` prints `Documents/sync-dump.json` (see
+    "Sync dump" below).
+
+## Sync dump (DEBUG only)
+
+`scripts/phone-sync-check.sh` in Jed diffs what the phone shows against Jed
+and the daemon. DEBUG builds launched with the env var `JCODE_SYNC_DUMP=1`
+(`SIMCTL_CHILD_JCODE_SYNC_DUMP=1 xcrun simctl launch <device>
+com.jcode.mobile`) write `Documents/sync-dump.json` once on launch and then
+after every board, reducer or composer change, coalesced to at most 4 writes
+per second and written atomically (temp + rename). `SyncDumpWriter` and the
+env check are compiled out of release builds; the encoding itself is
+`JCodeKit.SyncDump` (unit tested). Read it with `read_sync_dump.sh <device>`.
+
+```
+{ "board": [ { "server": "<serverName>", "host": "<host>", "reachable": true,
+               "sessions": [ ...the `sessions` rows from the wire, snake_case keys unchanged... ] } ],
+  "attached": null | { "session_id": "…", "title": "…"|null, "model": "…"|null,
+               "transcript": [ { "role": "user|assistant|system", "text": "…", "reasoning": "…",
+                                 "streaming": false,
+                                 "tool_calls": [ { "name": "bash",
+                                                   "status": "streaming_input|running|succeeded|failed",
+                                                   "has_input": true, "has_output": true } ] } ],
+               "pending_prompt": null | { "request_id": "…", "prompt": "…", "is_password": false },
+               "queued": [ "text", … ] },
+  "completion": { "kind": "slash|file|none", "rows": [ "name-without-slash" | "relative/path" … ] } }
+```
+
+- `board[]` is one entry per paired server in the saved order; `sessions`
+  are the decoded `SessionSummary` rows re-encoded with the wire's keys
+  (absent optionals omitted, as the server omits them).
+- `attached` is the reducer state the chat renders (never a second
+  rendering); `queued` is the soft-interrupt texts not yet injected.
+- `completion.rows` for `slash` are the popup's names without the `/`, in
+  popup order; for `file` the relative paths exactly as a tap inserts them
+  (without the `@`).
 
 ## Usage
 

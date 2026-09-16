@@ -22,6 +22,7 @@ to evaluate everything that can be checked locally.
 | 8f | `/` and `@` completion popups | `Completion*` tests; `slash.png` + `file.png` from run_e2e; one `search_files` per token change in mockgw2.log | PASS |
 | 8f | Composer completion: `/` skills+builtins, `@` one `search_files` per token (300 ms) | `completion*` tests; `slash.png` / `file.png` | PASS |
 | 8c | Deep links `jcode://board`, `jcode://session?host=&id=` | `deepLink*` tests; `attach.sh` in run_e2e | PASS |
+| 8g | Sync dump (`Documents/sync-dump.json`, `JCODE_SYNC_DUMP=1`) and the `jcode://debug/*` side door are DEBUG-only | `SyncDumpWriter` / `DebugURLChannel` sit inside `#if DEBUG`; `syncDump*` tests cover the encoding | PASS |
 
 ## App Store submission requirements
 
