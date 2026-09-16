@@ -62,7 +62,7 @@ struct NewSessionSheet: View {
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(board?.name ?? candidate.serverName)
+                            Text(board?.name ?? candidate.displayName)
                                 .font(.body)
                                 .foregroundStyle(Theme.textPrimary)
                             Text(board?.reachable == false ? "unreachable" : candidate.host)

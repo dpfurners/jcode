@@ -41,8 +41,14 @@ final class BoardModel {
     func setServers(_ servers: [ServerCredential]) {
         self.servers = servers
         boards = servers.map { server in
-            boards.first { $0.serverID == server.id }
-                ?? ServerBoard(serverID: server.id, name: server.serverName)
+            if var existing = boards.first(where: { $0.serverID == server.id }) {
+                // A rename must show at once, not on the next poll.
+                existing.pinnedName = server.customName
+                existing.name = server.displayName
+                return existing
+            }
+            return ServerBoard(serverID: server.id, name: server.serverName,
+                               pinnedName: server.customName)
         }
     }
 

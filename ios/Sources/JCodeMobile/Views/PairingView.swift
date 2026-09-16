@@ -12,6 +12,8 @@ struct PairingView: View {
     @State private var isPairing = false
     @State private var errorMessage: String?
     @State private var showScanner = false
+    @State private var probeReport: String?
+    @State private var isProbing = false
 
     var body: some View {
         ScrollView {
@@ -64,6 +66,37 @@ struct PairingView: View {
                 .animation(.easeOut(duration: 0.15), value: canPair)
                 .accessibilityLabel("Pair")
                 .accessibilityHint("Connects using the host, port, and code above")
+
+                // "Timed out" says nothing about which hop dropped the
+                // packet; this names it (VPN interface, raw TCP, HTTP).
+                Button(action: probe) {
+                    HStack(spacing: 8) {
+                        if isProbing && !reduceMotion {
+                            ProgressView().controlSize(.small)
+                        }
+                        Label(isProbing ? "Testing…" : "Test connection", systemImage: "waveform.path.ecg")
+                            .font(.subheadline)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.medium, style: .continuous))
+                    .foregroundStyle(Theme.textPrimary)
+                }
+                .buttonStyle(PressableButtonStyle(scale: 0.98))
+                .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty || isProbing)
+                .accessibilityHint("Checks the tailnet VPN, a raw TCP connect and the gateway's health endpoint")
+
+                if let probeReport {
+                    Text(probeReport)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(Theme.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(Theme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous))
+                }
 
                 Button {
                     showScanner = true
@@ -161,6 +194,18 @@ struct PairingView: View {
                         .stroke(Theme.border, lineWidth: 1)
                 )
                 .accessibilityLabel(label)
+        }
+    }
+
+    private func probe() {
+        guard let portValue = UInt16(port) else { return }
+        let target = host.trimmingCharacters(in: .whitespaces)
+        isProbing = true
+        probeReport = nil
+        Task {
+            defer { isProbing = false }
+            let report = await ReachabilityProbe.run(host: target, port: portValue)
+            probeReport = report.summary
         }
     }
 

@@ -44,6 +44,8 @@ struct SettingsServersSection: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Binding var showPairNew: Bool
+    @State private var renaming: ServerCredential?
+    @State private var renameDraft = ""
 
     var body: some View {
         Section("Servers") {
@@ -57,7 +59,7 @@ struct SettingsServersSection: View {
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(server.serverName)
+                            Text(server.displayName)
                                 .font(.body)
                                 .foregroundStyle(Theme.textPrimary)
                             Text("\(server.host):\(String(server.port))")
@@ -84,7 +86,7 @@ struct SettingsServersSection: View {
                     }
                 }
                 .listRowBackground(Theme.surface)
-                .accessibilityLabel(server.serverName)
+                .accessibilityLabel(server.displayName)
                 .accessibilityValue(isActive ? "Attached" : (board?.reachable == false ? "Unreachable" : ""))
                 .accessibilityHint("Refreshes this server's sessions")
                 .accessibilityAddTraits(isActive ? [.isSelected] : [])
@@ -94,7 +96,34 @@ struct SettingsServersSection: View {
                     } label: {
                         Label("Remove", systemImage: "trash")
                     }
+                    Button {
+                        renameDraft = server.customName ?? ""
+                        renaming = server
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(Theme.mint)
                 }
+                .contextMenu {
+                    Button {
+                        renameDraft = server.customName ?? ""
+                        renaming = server
+                    } label: {
+                        Label("Rename…", systemImage: "pencil")
+                    }
+                }
+            }
+            .alert("Rename server", isPresented: Binding(
+                get: { renaming != nil }, set: { if !$0 { renaming = nil } })
+            ) {
+                TextField("Name", text: $renameDraft)
+                Button("Rename") {
+                    if let server = renaming { model.renameServer(server, to: renameDraft) }
+                    renaming = nil
+                }
+                Button("Cancel", role: .cancel) { renaming = nil }
+            } message: {
+                Text("Every daemon calls itself \u{201c}jcode\u{201d}; give this one the Mac\u{2019}s name. Leave empty to use the server\u{2019}s own name.")
             }
             Button {
                 showPairNew = true

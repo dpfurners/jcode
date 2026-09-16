@@ -9,6 +9,23 @@ private func session(
     SessionSummary(id: id, shortName: id, updatedAt: updated, phase: phase)
 }
 
+@Test func pinnedNameSurvivesPollsAndCredentialDisplayName() {
+    let cred = ServerCredential(host: "100.1.2.3", port: 7643, token: "t", serverName: "jcode",
+                                serverVersion: "v1", customName: "work-mini")
+    #expect(cred.displayName == "work-mini")
+    #expect(ServerCredential(host: "h", port: 1, token: "t", serverName: "jcode", serverVersion: "v").displayName == "jcode")
+    // A rename is what the board shows, and a poll that says "jcode" does not undo it.
+    var board = ServerBoard(serverID: cred.id, name: cred.serverName, pinnedName: cred.customName)
+    #expect(board.name == "work-mini")
+    let payload = SessionsPayload(id: 1, serverName: "jcode", serverIcon: nil, serverVersion: "v2",
+                                  sessions: [], recentProjects: [])
+    board = board.applying(payload, at: Date())
+    #expect(board.name == "work-mini")
+    #expect(board.version == "v2")
+    // Deep links match the custom name too.
+    #expect(DeepLink.matchServer(host: "WORK-MINI", in: [cred])?.id == cred.id)
+}
+
 @Test func boardRanksNeedsYouThenFailedThenRunningThenIdleThenNewest() {
     let a = ServerBoard(
         serverID: "a:7643", name: "home",

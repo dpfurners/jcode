@@ -22,10 +22,12 @@ public struct ServerBoard: Equatable, Sendable, Identifiable {
     public init(
         serverID: String, name: String, icon: String? = nil, version: String? = nil,
         sessions: [SessionSummary] = [], recentProjects: [RecentProject] = [],
-        reachable: Bool? = nil, lastSeen: Date? = nil, lastError: String? = nil
+        reachable: Bool? = nil, lastSeen: Date? = nil, lastError: String? = nil,
+        pinnedName: String? = nil
     ) {
         self.serverID = serverID
-        self.name = name
+        self.name = pinnedName ?? name
+        self.pinnedName = pinnedName
         self.icon = icon
         self.version = version
         self.sessions = sessions
@@ -35,11 +37,16 @@ public struct ServerBoard: Equatable, Sendable, Identifiable {
         self.lastError = lastError
     }
 
-    /// Folds a successful poll in. Sessions and projects are replaced, the
-    /// server's self-reported name wins over the pairing-time name.
+    /// A name the user chose on the phone. When set, polls never overwrite
+    /// `name` with the server's self-report.
+    public var pinnedName: String?
+
+    /// Folds a successful poll in. Sessions and projects are replaced; the
+    /// server's self-reported name wins over the pairing-time name, and a
+    /// user-pinned name wins over both.
     public func applying(_ payload: SessionsPayload, at now: Date) -> ServerBoard {
         var next = self
-        next.name = payload.serverName ?? name
+        next.name = pinnedName ?? payload.serverName ?? name
         next.icon = payload.serverIcon ?? icon
         next.version = payload.serverVersion ?? version
         next.sessions = payload.sessions
@@ -144,6 +151,7 @@ public enum DeepLink: Equatable, Sendable {
             let full = server.host.lowercased()
             let label = full.split(separator: ".").first.map(String.init) ?? full
             return full == wanted || label == wanted || server.serverName.lowercased() == wanted
+                || server.displayName.lowercased() == wanted
         }
     }
 }

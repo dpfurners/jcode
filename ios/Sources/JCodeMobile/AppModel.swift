@@ -71,6 +71,17 @@ final class AppModel {
         Task { await board.pollOne(credential) }
     }
 
+    /// Gives a server a name of the user's choosing (empty clears it).
+    func renameServer(_ credential: ServerCredential, to name: String) {
+        var next = credential
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        next.customName = trimmed.isEmpty ? nil : trimmed
+        store.save(next)
+        servers = store.loadAll()
+        board.setServers(servers)
+        if activeServer?.id == credential.id { activeServer = next }
+    }
+
     func removeServer(_ credential: ServerCredential) {
         store.remove(id: credential.id)
         servers = store.loadAll()

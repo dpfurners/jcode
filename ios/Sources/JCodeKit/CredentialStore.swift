@@ -10,6 +10,12 @@ public struct ServerCredential: Codable, Equatable, Sendable, Identifiable {
     public var serverName: String
     public var serverVersion: String
     public var pairedAt: Date
+    /// A name the user gave this server on the phone. Every daemon reports
+    /// itself as "jcode" unless started with `--server-name`, so three Macs
+    /// would otherwise all read the same; this wins over both the pairing
+    /// name and the name a poll reports. Optional so credentials written by
+    /// older builds decode unchanged.
+    public var customName: String?
 
     public init(
         host: String,
@@ -17,7 +23,8 @@ public struct ServerCredential: Codable, Equatable, Sendable, Identifiable {
         token: String,
         serverName: String,
         serverVersion: String,
-        pairedAt: Date = Date()
+        pairedAt: Date = Date(),
+        customName: String? = nil
     ) {
         self.host = host
         self.port = port
@@ -25,6 +32,15 @@ public struct ServerCredential: Codable, Equatable, Sendable, Identifiable {
         self.serverName = serverName
         self.serverVersion = serverVersion
         self.pairedAt = pairedAt
+        self.customName = customName
+    }
+
+    /// What to show: the user's name when set, else the server's.
+    public var displayName: String {
+        if let customName, !customName.trimmingCharacters(in: .whitespaces).isEmpty {
+            return customName
+        }
+        return serverName
     }
 
     public var gateway: Gateway {
