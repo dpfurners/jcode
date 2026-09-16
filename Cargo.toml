@@ -530,6 +530,17 @@ opt-level = 3
 [profile.test.package.memchr]
 opt-level = 3
 
+# Session snapshots are parsed on every phone board poll and remote startup;
+# even the metadata-only stub parse has to tokenize past a multi-MB messages
+# array. serde_json at opt-level 0 is ~5x slower (310 ms vs 65 ms for 200
+# stubs), which dwarfs everything else in list_sessions.
+[profile.dev.package.serde_json]
+opt-level = 3
+[profile.selfdev.package.serde_json]
+opt-level = 3
+[profile.test.package.serde_json]
+opt-level = 3
+
 # The embedding stack (tract ONNX inference + HF tokenizer) runs the MiniLM
 # model for memory recall/maintenance on the shared server. At opt-level 0 a
 # single embed measured ~666 ms (matmul inner loops unoptimized), which keeps

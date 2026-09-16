@@ -83,6 +83,38 @@ fn preview_is_trimmed_to_240_chars_and_strips_reminders() {
     assert_eq!(stripped, "hello  world");
 }
 
+#[test]
+fn empty_live_session_is_skipped_unless_a_named_client_holds_it() {
+    let anonymous = LiveInfo::default();
+    let named = LiveInfo {
+        has_named_client: true,
+        ..Default::default()
+    };
+    assert!(is_connection_artefact(false, false, &anonymous));
+    assert!(!is_connection_artefact(false, false, &named));
+    assert!(!is_connection_artefact(true, false, &anonymous));
+    assert!(!is_connection_artefact(false, true, &anonymous));
+
+    let mut conns = HashMap::new();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    conns.insert(
+        "c1".to_string(),
+        ClientConnectionInfo {
+            client_id: "c1".to_string(),
+            session_id: "s".to_string(),
+            client_instance_id: Some("jed-tab".to_string()),
+            debug_client_id: None,
+            connected_at: Instant::now(),
+            last_seen: Instant::now(),
+            is_processing: false,
+            current_tool_name: None,
+            terminal_env: Vec::new(),
+            disconnect_tx: tx,
+        },
+    );
+    assert!(live_info_by_session(&conns)["s"].has_named_client);
+}
+
 fn row(id: &str, dir: Option<&str>, updated: &str) -> SessionRow {
     SessionRow {
         id: id.to_string(),

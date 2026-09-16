@@ -128,6 +128,62 @@ fn replay_journal_lines(
     Ok(stats)
 }
 
+/// Preview from the newest journal entry's meta, if the journal exists and its
+/// last line parses. Messages in that line are skipped by serde, not decoded.
+fn journal_tail_message_preview(journal_path: &Path) -> Option<super::StoredMessagePreview> {
+    #[derive(serde::Deserialize)]
+    struct MetaPreview {
+        #[serde(default)]
+        last_message_preview: Option<super::StoredMessagePreview>,
+    }
+    #[derive(serde::Deserialize)]
+    struct EntryPreview {
+        meta: MetaPreview,
+    }
+    let line = read_last_nonempty_line(journal_path)?;
+    serde_json::from_str::<EntryPreview>(&line)
+        .ok()?
+        .meta
+        .last_message_preview
+}
+
+/// Read the last non-empty line of a file without loading the whole file
+/// unless the tail line itself is longer than the probe window.
+fn read_last_nonempty_line(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL_PROBE_BYTES: u64 = 64 * 1024;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let start = len.saturating_sub(TAIL_PROBE_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let trimmed_end = text.trim_end_matches(['\n', '\r']);
+    if trimmed_end.is_empty() {
+        return None;
+    }
+    match trimmed_end.rfind('\n') {
+        Some(idx) => Some(trimmed_end[idx + 1..].trim().to_string()),
+        // No newline before the last line: it is complete only if the probe
+        // started at the beginning of the file.
+        None if start == 0 => Some(trimmed_end.trim().to_string()),
+        None => {
+            let content = std::fs::read_to_string(path).ok()?;
+            content
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        }
+    }
+}
+
 impl Session {
     fn pre_wipe_backup_path(path: &Path, timestamp: i64) -> PathBuf {
         let file_name = path
@@ -309,8 +365,21 @@ impl Session {
     /// session restore + history bootstrap.
     pub fn load_startup_stub(session_id: &str) -> Result<Self> {
         let path = session_path(session_id)?;
-        let reader = BufReader::new(std::fs::File::open(&path)?);
-        let stub: SessionStartupStub = serde_json::from_reader(reader)?;
+        // Read the whole file first: `from_reader` pulls bytes one at a time
+        // through `IoRead`, which is several times slower than skipping the
+        // messages array in memory. The stub load is the hot path of the
+        // phone board poll and remote startup, and snapshots reach tens of MB.
+        let bytes = std::fs::read(&path)?;
+        let mut stub: SessionStartupStub = serde_json::from_slice(&bytes)?;
+        drop(bytes);
+        // Appends between checkpoints only touch the journal, so the snapshot's
+        // preview can lag behind the transcript. The last journal entry carries
+        // the freshest meta; read just that line instead of replaying messages.
+        if let Some(preview) =
+            journal_tail_message_preview(&session_journal_path_from_snapshot(&path))
+        {
+            stub.last_message_preview = Some(preview);
+        }
         Ok(Self::session_from_startup_stub(stub))
     }
 
@@ -373,6 +442,7 @@ impl Session {
 
     pub fn save(&mut self) -> Result<()> {
         self.updated_at = Utc::now();
+        self.last_message_preview = super::preview::last_message_preview(&self.messages);
         let path = session_path(&self.id)?;
         let journal_path = session_journal_path_from_snapshot(&path);
 

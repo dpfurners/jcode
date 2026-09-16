@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     EnvSnapshot, SessionImproveMode, SessionStatus, StoredCompactionState, StoredMemoryInjection,
-    StoredMessage, StoredReplayEvent,
+    StoredMessage, StoredMessagePreview, StoredReplayEvent,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -35,6 +35,8 @@ pub(super) struct SessionJournalMeta {
     pub(super) is_debug: bool,
     pub(super) saved: bool,
     pub(super) save_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) last_message_preview: Option<StoredMessagePreview>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
