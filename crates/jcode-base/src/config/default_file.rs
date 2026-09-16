@@ -640,6 +640,10 @@ port = 7643
 # Bind address (0.0.0.0 for LAN/Tailscale reachability)
 bind_addr = "0.0.0.0"
 
+[phone]
+# Working directories pinned to the top of the phone's project list
+# pinned_projects = ["/path/to/project"]
+
 [power]
 # Prevent automatic system sleep while any jcode session is actively working.
 # Linux also blocks lid-switch suspend. Windows still respects explicit lid-close

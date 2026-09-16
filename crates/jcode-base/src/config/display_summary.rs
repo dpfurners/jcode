@@ -109,6 +109,9 @@ impl Config {
 - Enabled: {}
 - Bind address: {}:{}
 
+**Phone:**
+- Pinned projects: {}
+
 **Ambient:**
 - Enabled: {}
 - Provider: {}
@@ -308,6 +311,11 @@ impl Config {
             self.gateway.enabled,
             self.gateway.bind_addr,
             self.gateway.port,
+            if self.phone.pinned_projects.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.phone.pinned_projects.join(", ")
+            },
             self.ambient.enabled,
             self.ambient.provider.as_deref().unwrap_or("(auto)"),
             self.ambient
