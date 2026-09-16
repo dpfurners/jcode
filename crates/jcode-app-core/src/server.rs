@@ -35,6 +35,7 @@ mod durable_state;
 mod headless;
 mod jade_relay;
 mod lifecycle;
+mod phone_sessions;
 mod live_turn;
 mod pending_prompts;
 mod provider_control;

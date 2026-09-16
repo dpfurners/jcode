@@ -111,8 +111,34 @@ pub(super) async fn maybe_handle_server_state_command(
     if cmd == "sessions" {
         let (connected_agents, members) =
             connected_session_snapshot(sessions, client_connections, swarm_members).await;
+        // Same rows the phone board sees, keyed by id, so `jcode debug
+        // sessions` shows phase/preview/queued alongside the raw agent view.
+        let board_rows: HashMap<String, crate::protocol::SessionRow> = {
+            let event = super::phone_sessions::build_sessions_event(
+                0,
+                None,
+                true,
+                super::phone_sessions::ListSessionsContext {
+                    sessions,
+                    client_connections,
+                    soft_interrupt_queues,
+                    swarm_members,
+                    server_name: &server_identity.name,
+                    server_icon: &server_identity.icon,
+                },
+            )
+            .await;
+            match event {
+                crate::protocol::ServerEvent::Sessions { sessions, .. } => sessions
+                    .into_iter()
+                    .map(|row| (row.id.clone(), row))
+                    .collect(),
+                _ => HashMap::new(),
+            }
+        };
         let mut out: Vec<serde_json::Value> = Vec::new();
         for (sid, agent_arc) in &connected_agents {
+            let board = board_rows.get(sid);
             let member_info = members.get(sid);
             let member_status = member_info.map(|m| m.status.as_str());
             let (provider, model, is_processing, working_dir_str, token_usage): (
@@ -158,6 +184,18 @@ pub(super) async fn maybe_handle_server_state_command(
                 "token_usage": token_usage,
                 "server_name": server_identity.name,
                 "server_icon": server_identity.icon,
+                "short_name": board.and_then(|b| b.short_name.clone()),
+                "title": board.and_then(|b| b.title.clone()),
+                "phase": board.map(|b| b.phase.clone()),
+                "reason": board.and_then(|b| b.reason.clone()),
+                "current_tool": board.and_then(|b| b.current_tool.clone()),
+                "turn_started_at": board.and_then(|b| b.turn_started_at.clone()),
+                "queued": board.map(|b| b.queued).unwrap_or(0),
+                "pending_prompt": board.and_then(|b| b.pending_prompt.clone()),
+                "preview": board.and_then(|b| b.preview.clone()),
+                "client_count": board.map(|b| b.client_count).unwrap_or(0),
+                "is_live": board.map(|b| b.is_live).unwrap_or(true),
+                "swarm_role": board.and_then(|b| b.swarm_role.clone()),
             }));
         }
         return Ok(Some(

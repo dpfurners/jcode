@@ -228,6 +228,49 @@ def main():
           rn is not None and rn.get("display_title") == "Renamed by smoke"
           and bool(rn.get("session_id")))
 
+    # 12. list_sessions -> sessions (board shape)
+    ws_send(s, json.dumps({"id": 9, "type": "list_sessions", "limit": 100, "include_workers": False}))
+    evs = collect_events(s, until_type="sessions")
+    ls = next((e for e in evs if e["type"] == "sessions"), None)
+    check("list_sessions -> sessions", ls is not None)
+    if ls:
+        rows = ls.get("sessions", [])
+        check("sessions has rows", len(rows) >= 2)
+        check("sessions server_name", ls.get("server_name") == "mock-jcode")
+        check("sessions recent_projects", len(ls.get("recent_projects", [])) >= 1)
+        required = {"id", "phase", "queued", "pending_prompt", "client_count", "is_live",
+                    "created_at", "updated_at"}
+        check("session rows carry required keys",
+              all(required <= set(r.keys()) for r in rows))
+        check("session phases valid",
+              all(r["phase"] in ("needs_you", "failed", "running", "idle") for r in rows))
+        needs = next((r for r in rows if r["phase"] == "needs_you"), None)
+        check("needs_you row has pending_prompt", needs is not None and needs.get("pending_prompt"))
+
+    # 13. search_files -> file_matches (relative and absolute)
+    ws_send(s, json.dumps({"id": 10, "type": "search_files", "query": "compos", "limit": 30,
+                           "dirs_only": False, "working_dir": None}))
+    evs = collect_events(s, until_type="file_matches")
+    fm = next((e for e in evs if e["type"] == "file_matches"), None)
+    check("search_files -> file_matches", fm is not None and fm.get("query") == "compos")
+    check("file_matches finds ComposerView",
+          fm is not None and any(m["path"].endswith("ComposerView.swift") for m in fm.get("matches", [])))
+    ws_send(s, json.dumps({"id": 11, "type": "search_files", "query": "/Users/mock/", "dirs_only": True}))
+    evs = collect_events(s, until_type="file_matches")
+    fm = next((e for e in evs if e["type"] == "file_matches"), None)
+    check("search_files absolute dirs_only",
+          fm is not None and fm.get("matches") and all(m.get("is_dir") for m in fm["matches"]))
+
+    # 14. close_session -> session_closed, then unknown id -> error
+    ws_send(s, json.dumps({"id": 12, "type": "close_session", "session_id": "mock-session-0003", "delete": False}))
+    evs = collect_events(s, until_type="session_closed")
+    sc = next((e for e in evs if e["type"] == "session_closed"), None)
+    check("close_session -> session_closed",
+          sc is not None and sc.get("session_id") == "mock-session-0003" and sc.get("deleted") is False)
+    ws_send(s, json.dumps({"id": 13, "type": "close_session", "session_id": "mock-session-0003"}))
+    evs = collect_events(s, until_type="error")
+    check("close_session unknown -> error", any(e["type"] == "error" and e.get("id") == 13 for e in evs))
+
     s.close()
 
     print()

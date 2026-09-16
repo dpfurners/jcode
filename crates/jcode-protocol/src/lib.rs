@@ -175,6 +175,7 @@ pub type ReloadRecoverySnapshot = jcode_selfdev_types::ReloadRecoveryDirective;
 
 mod wire;
 pub use wire::TaskGraphNodeSpec;
+pub use wire::{FileMatch, PendingPromptInfo, PreviewInfo, RecentProject, SessionRow};
 pub use wire::{Request, ServerEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -576,6 +577,9 @@ impl Request {
             Request::RewindUndo { id } => *id,
             Request::Ping { id } => *id,
             Request::GetState { id } => *id,
+            Request::ListSessions { id, .. } => *id,
+            Request::CloseSession { id, .. } => *id,
+            Request::SearchFiles { id, .. } => *id,
             Request::DebugCommand { id, .. } => *id,
             Request::ClientDebugCommand { id, .. } => *id,
             Request::ClientDebugResponse { id, .. } => *id,

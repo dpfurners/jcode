@@ -1526,6 +1526,15 @@ impl Default for GatewayConfig {
     }
 }
 
+/// Phone (Jed) client configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PhoneConfig {
+    /// Working directories always shown at the top of the phone's project
+    /// list, ahead of recently used ones (default: empty).
+    pub pinned_projects: Vec<String>,
+}
+
 /// Power-management configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

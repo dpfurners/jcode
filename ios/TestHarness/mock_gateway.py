@@ -49,6 +49,85 @@ class GatewayState:
         self.token_output = 0
         self.reasoning_effort = "high"
         self.push_demo = False
+        # Session board (list_sessions / close_session), shaped like
+        # docs/PHONE-WIRE.md. Closed ids drop out of the list.
+        self.closed_sessions = set()
+
+
+def board_sessions(state):
+    """Rows for the `sessions` event. The first row mirrors the live mock
+    session; the others exercise every phase the board renders."""
+    rows = [
+        {
+            "id": state.session_id, "short_name": "mock", "title": state.title,
+            "working_dir": "/Users/mock/dev/jed",
+            "created_at": "2026-09-15T18:45:33Z", "updated_at": "2026-09-15T18:51:41Z",
+            "last_active_at": "2026-09-15T18:51:41Z",
+            "model": state.model, "provider": state.model.split(":")[0],
+            "phase": "idle", "reason": None, "current_tool": None,
+            "turn_started_at": None, "queued": 0, "pending_prompt": None,
+            "preview": {"kind": "assistant", "text": "Mock reply."},
+            "client_count": 1, "is_live": True, "parent_id": None, "swarm_role": None,
+        },
+        {
+            "id": "mock-session-0002", "short_name": "fox", "title": "Fix the queue bar",
+            "working_dir": "/Users/mock/dev/jcode",
+            "created_at": "2026-09-15T17:00:00Z", "updated_at": "2026-09-15T18:50:02Z",
+            "last_active_at": "2026-09-15T18:50:02Z",
+            "model": "claude-opus-4", "provider": "claude",
+            "phase": "needs_you", "reason": "waiting for input", "current_tool": "ask_user",
+            "turn_started_at": "2026-09-15T18:50:02Z", "queued": 1,
+            "pending_prompt": {"request_id": "req-1", "prompt": "Which DB?",
+                               "is_password": False, "tool_call_id": "tc-1"},
+            "preview": {"kind": "prompt", "text": "Which DB?"},
+            "client_count": 1, "is_live": True, "parent_id": None, "swarm_role": None,
+        },
+        {
+            "id": "mock-session-0003", "short_name": "owl", "title": None,
+            "working_dir": "/Users/mock/dev/jcode",
+            "created_at": "2026-09-14T10:00:00Z", "updated_at": "2026-09-14T10:20:00Z",
+            "last_active_at": "2026-09-14T10:20:00Z",
+            "model": "gpt-5", "provider": "openai",
+            "phase": "failed", "reason": "provider returned 500", "current_tool": None,
+            "turn_started_at": None, "queued": 0, "pending_prompt": None,
+            "preview": {"kind": "user", "text": "run the tests"},
+            "client_count": 0, "is_live": False, "parent_id": None, "swarm_role": None,
+        },
+    ]
+    return [r for r in rows if r["id"] not in state.closed_sessions]
+
+
+def board_recent_projects(rows):
+    seen = {}
+    for r in rows:
+        d = r.get("working_dir")
+        if not d:
+            continue
+        if d in seen:
+            seen[d]["session_count"] += 1
+        else:
+            seen[d] = {"path": d, "last_used_at": r["updated_at"], "session_count": 1}
+    return list(seen.values())[:20]
+
+
+def board_file_matches(query, dirs_only):
+    """Deterministic fuzzy search over a fake tree; absolute queries complete
+    against a fake filesystem root."""
+    if query.startswith("/"):
+        candidates = [("/Users/mock/dev/", True), ("/Users/mock/dev/jed/", True),
+                      ("/Users/mock/dev/jcode/", True), ("/Users/mock/notes.txt", False)]
+        out = [{"path": p, "is_dir": d} for p, d in candidates
+               if p.startswith(query) and (d or not dirs_only)]
+        return out
+    tree = [("Sources/Jed/Views/Chat/ComposerView.swift", False),
+            ("Sources/Jed/Views/Chat", True),
+            ("Sources/Jed/Models/Session.swift", False),
+            ("README.md", False)]
+    q = query.lower()
+    def subseq(hay):
+        it = iter(hay.lower())
+        return all(ch in it for ch in q)
+    return [{"path": p, "is_dir": d} for p, d in tree if subseq(p) and (d or not dirs_only)]
 
 
 def scenario_messages(name):
@@ -320,6 +399,32 @@ async def handle_request(ws, state, raw):
         await send_event(ws, history_payload(state, req_id))
     elif req_type == "cancel_soft_interrupts":
         await send_event(ws, {"type": "ack", "id": req_id})
+    elif req_type == "list_sessions":
+        rows = board_sessions(state)
+        if not msg.get("include_workers", False):
+            rows = [r for r in rows if r.get("parent_id") is None]
+        rows = rows[: int(msg.get("limit") or 100)]
+        await send_event(ws, {
+            "type": "sessions", "id": req_id,
+            "server_name": SERVER_NAME, "server_icon": "🧪", "server_version": SERVER_VERSION,
+            "sessions": rows, "recent_projects": board_recent_projects(rows),
+        })
+    elif req_type == "close_session":
+        sid = msg.get("session_id", "")
+        known = any(r["id"] == sid for r in board_sessions(state))
+        if not known:
+            await send_event(ws, {"type": "error", "id": req_id, "message": f"Unknown session '{sid}'"})
+        else:
+            state.closed_sessions.add(sid)
+            if sid == state.session_id:
+                await send_event(ws, {"type": "session_close_requested", "reason": "Closed from the session board"})
+            await send_event(ws, {"type": "session_closed", "id": req_id,
+                                  "session_id": sid, "deleted": bool(msg.get("delete", False))})
+    elif req_type == "search_files":
+        query = msg.get("query", "")
+        matches = board_file_matches(query, bool(msg.get("dirs_only", False)))
+        await send_event(ws, {"type": "file_matches", "id": req_id, "query": query,
+                              "matches": matches[: int(msg.get("limit") or 30)]})
     elif req_type == "_notify":
         # Test-only: synthesize a push notification + a compaction notice.
         await send_event(ws, {"type": "notification", "from_name": "swarm", "message": "build finished"})

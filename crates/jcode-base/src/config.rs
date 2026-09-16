@@ -10,8 +10,9 @@ pub use jcode_config_types::{
     KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
-    PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-    SkillsConfig, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
+    PhoneConfig, PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig,
+    SessionPickerResumeAction, SkillsConfig, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout,
+    TerminalConfig, UpdateChannel,
     WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
@@ -530,6 +531,9 @@ pub struct Config {
 
     /// WebSocket gateway configuration (for iOS/web clients)
     pub gateway: GatewayConfig,
+
+    /// Phone (Jed) client configuration
+    pub phone: PhoneConfig,
 
     /// Compaction configuration
     pub compaction: CompactionConfig,
