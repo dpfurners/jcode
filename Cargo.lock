@@ -3116,6 +3116,7 @@ dependencies = [
  "futures",
  "glob",
  "global-hotkey",
+ "ignore",
  "jcode-agent-runtime",
  "jcode-ambient-types",
  "jcode-base",
