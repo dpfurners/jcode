@@ -1503,4 +1503,12 @@ pub enum ServerEvent {
         /// Tool call ID this is associated with
         tool_call_id: String,
     },
+
+    /// A pending stdin request was answered by some client attached to the
+    /// session; other clients should close their prompt UI.
+    #[serde(rename = "stdin_resolved")]
+    StdinResolved {
+        /// The request ID that was resolved
+        request_id: String,
+    },
 }

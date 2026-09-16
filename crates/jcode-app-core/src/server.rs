@@ -36,6 +36,7 @@ mod headless;
 mod jade_relay;
 mod lifecycle;
 mod live_turn;
+mod pending_prompts;
 mod provider_control;
 mod reload;
 mod reload_recovery;
@@ -586,6 +587,7 @@ async fn capture_runtime_memory_attribution_sample(
 mod state;
 
 use self::state::latest_peer_touches;
+pub use self::pending_prompts::{PendingPromptInfo, PendingPromptStore};
 pub use self::state::{
     FileAccess, SessionControlHandle, SharedContext, SwarmEvent, SwarmEventType, SwarmMember,
     SwarmState,
@@ -738,6 +740,9 @@ pub struct Server {
     await_members_runtime: AwaitMembersRuntime,
     /// Persisted dedupe registry for mutating swarm coordinator operations.
     swarm_mutation_runtime: SwarmMutationRuntime,
+    /// Stdin prompts waiting for a user answer, keyed by session id so they
+    /// survive client reconnects and can be answered from any attached client.
+    pending_prompts: PendingPromptStore,
 }
 
 impl Server {
@@ -824,7 +829,17 @@ impl Server {
             soft_interrupt_queues: Arc::new(RwLock::new(HashMap::new())),
             await_members_runtime: AwaitMembersRuntime::default(),
             swarm_mutation_runtime: SwarmMutationRuntime::default(),
+            pending_prompts: PendingPromptStore::new(),
         }
+    }
+
+    /// Snapshot of the stdin prompt currently waiting on `session_id`, if any.
+    ///
+    /// Reads the same per-session store the connection handlers use, so
+    /// `list_sessions.pending_prompt` and the replayed `stdin_request` after
+    /// `history` always agree.
+    pub async fn pending_prompt_for(&self, session_id: &str) -> Option<PendingPromptInfo> {
+        self.pending_prompts.pending_prompt_for(session_id).await
     }
 
     pub fn new_with_paths(

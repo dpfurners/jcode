@@ -948,6 +948,7 @@ impl BashTool {
             .unwrap_or_else(|| params.command.clone());
         let stdin_tx = ctx.stdin_request_tx.clone();
         let tool_call_id = ctx.tool_call_id.clone();
+        let session_id_for_stdin = ctx.session_id.clone();
         let title_for_work = title.clone();
         // Track progress parsed from output so a timeout promotion starts the
         // background task at the real percentage instead of 0%.
@@ -991,6 +992,8 @@ impl BashTool {
 
                                     let request = StdinInputRequest {
                                         request_id,
+                                        session_id: session_id_for_stdin.clone(),
+                                        tool_call_id: tool_call_id.clone(),
                                         prompt: String::new(),
                                         is_password: false,
                                         response_tx,

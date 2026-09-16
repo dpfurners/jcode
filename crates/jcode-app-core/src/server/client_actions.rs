@@ -1093,15 +1093,26 @@ pub(super) fn handle_compact(
     });
 }
 
+/// Answer a pending stdin prompt from any client attached to its session.
+/// On success the session's clients receive `stdin_resolved` so prompt UIs
+/// that did not answer can close.
 pub(super) async fn handle_stdin_response(
     id: u64,
     request_id: String,
     input: String,
-    stdin_responses: &Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
+    pending_prompts: &super::PendingPromptStore,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    if let Some(tx) = stdin_responses.lock().await.remove(&request_id) {
-        let _ = tx.send(input);
+    if let Some(session_id) = pending_prompts.resolve(&request_id, input).await {
+        let resolved = ServerEvent::StdinResolved {
+            request_id: request_id.clone(),
+        };
+        let delivered =
+            super::state::fanout_session_event(swarm_members, &session_id, resolved.clone()).await;
+        if delivered == 0 {
+            let _ = client_event_tx.send(resolved);
+        }
     }
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }

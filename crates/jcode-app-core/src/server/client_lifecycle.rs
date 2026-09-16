@@ -48,7 +48,7 @@ use super::provider_control::{
 use super::{
     AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileTouchService,
     SessionControlHandle, SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMember,
-    SwarmMutationRuntime, VersionedPlan, format_structured_completion_report,
+    PendingPromptStore, SwarmMutationRuntime, VersionedPlan, format_structured_completion_report,
     register_session_interrupt_queue, send_swarm_plan_to_session, truncate_detail,
     update_member_status, update_member_status_with_report, update_member_status_with_report_tldr,
 };
@@ -369,6 +369,18 @@ async fn poll_agent_compaction_completion(agent: Arc<Mutex<Agent>>) -> Option<Se
         .map(compaction_server_event)
 }
 
+/// After `history` was sent to a (re)subscribing client, replay the stdin
+/// prompt that is still waiting on this session so the client can answer it.
+async fn replay_pending_prompt(
+    pending_prompts: &PendingPromptStore,
+    session_id: &str,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    if let Some(info) = pending_prompts.pending_prompt_for(session_id).await {
+        let _ = client_event_tx.send(info.to_event());
+    }
+}
+
 async fn refresh_session_control_handle(
     session_id: &str,
     agent: &Arc<Mutex<Agent>>,
@@ -461,6 +473,7 @@ pub(super) async fn handle_client(
     soft_interrupt_queues: SessionInterruptQueues,
     await_members_runtime: AwaitMembersRuntime,
     swarm_mutation_runtime: SwarmMutationRuntime,
+    pending_prompts: PendingPromptStore,
 ) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -745,9 +758,6 @@ pub(super) async fn handle_client(
         }
     }
 
-    let stdin_responses: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
     // Subscribe to bus events so we can forward ModelsUpdated to this client
     // (e.g. when Copilot finishes async init after the initial History was sent)
     let mut bus_rx = Bus::global().subscribe();
@@ -759,23 +769,41 @@ pub(super) async fn handle_client(
         let mut agent_guard = agent.lock().await;
         agent_guard.set_stdin_request_tx(stdin_req_tx.clone());
     }
+    // The prompt is stored server-wide under its session id and fanned out to
+    // every client attached to that session, so reconnects and second clients
+    // can see and answer it (see `pending_prompts`).
     let stdin_forwarder = {
         let client_event_tx = client_event_tx.clone();
-        let stdin_responses = stdin_responses.clone();
-        let tool_call_id = String::new();
+        let pending_prompts = pending_prompts.clone();
+        let swarm_members = Arc::clone(&swarm_members);
+        let fallback_session_id = client_session_id.clone();
         tokio::spawn(async move {
             while let Some(req) = stdin_req_rx.recv().await {
-                let request_id = req.request_id.clone();
-                stdin_responses
-                    .lock()
-                    .await
-                    .insert(request_id.clone(), req.response_tx);
-                let _ = client_event_tx.send(ServerEvent::StdinRequest {
-                    request_id,
-                    prompt: req.prompt,
-                    is_password: req.is_password,
-                    tool_call_id: tool_call_id.clone(),
-                });
+                let session_id = if req.session_id.is_empty() {
+                    fallback_session_id.clone()
+                } else {
+                    req.session_id.clone()
+                };
+                let info = pending_prompts
+                    .register(
+                        &session_id,
+                        req.request_id.clone(),
+                        req.prompt,
+                        req.is_password,
+                        req.tool_call_id,
+                        req.response_tx,
+                    )
+                    .await;
+                pending_prompts.spawn_abandon_watcher(session_id.clone(), req.request_id);
+                let delivered = super::state::fanout_session_event(
+                    &swarm_members,
+                    &session_id,
+                    info.to_event(),
+                )
+                .await;
+                if delivered == 0 {
+                    let _ = client_event_tx.send(info.to_event());
+                }
             }
         })
     };
@@ -1753,6 +1781,7 @@ pub(super) async fn handle_client(
                 }
                 client_subscribed = true;
                 provisional_session = false;
+                replay_pending_prompt(&pending_prompts, &client_session_id, &client_event_tx).await;
             }
 
             Request::GetHistory { id } => {
@@ -1775,6 +1804,7 @@ pub(super) async fn handle_client(
                 {
                     break;
                 }
+                replay_pending_prompt(&pending_prompts, &client_session_id, &client_event_tx).await;
                 // Follow the History payload with the current swarm plan: a
                 // session-changing History clears the client's plan snapshot
                 // (and the inline plan graph), so re-send it afterwards
@@ -1908,6 +1938,7 @@ pub(super) async fn handle_client(
                 if let Some(snapshot) = try_available_models_snapshot(&agent) {
                     last_available_models_snapshot = Some(snapshot);
                 }
+                replay_pending_prompt(&pending_prompts, &client_session_id, &client_event_tx).await;
             }
 
             Request::ResumeAllSessions { id } => {
@@ -2141,8 +2172,15 @@ pub(super) async fn handle_client(
                 request_id,
                 input,
             } => {
-                handle_stdin_response(id, request_id, input, &stdin_responses, &client_event_tx)
-                    .await;
+                handle_stdin_response(
+                    id,
+                    request_id,
+                    input,
+                    &pending_prompts,
+                    &swarm_members,
+                    &client_event_tx,
+                )
+                .await;
             }
 
             Request::AgentTask { id, task, .. } => {
@@ -2980,7 +3018,6 @@ pub(super) async fn handle_client(
         // to a new client. Close response channels instead of waiting forever.
         stdin_forwarder.abort();
         let _ = stdin_forwarder.await;
-        stdin_responses.lock().await.clear();
         if let Some(handle) = processing_task.take() {
             crate::logging::info(&format!(
                 "Retaining disconnected remote turn for session {}",
