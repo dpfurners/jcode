@@ -40,6 +40,7 @@ mod maintenance;
 mod memory_profile;
 mod model;
 mod persistence;
+mod preview;
 mod render;
 mod storage_paths;
 pub use crash::{
@@ -58,6 +59,9 @@ use memory_profile::{
 };
 use model::SESSION_CONTEXT_PREFIX;
 pub use model::{StoredReplayEvent, StoredReplayEventKind};
+pub use preview::{
+    MESSAGE_PREVIEW_MAX_CHARS, StoredMessagePreview, last_message_preview, strip_system_reminders,
+};
 pub use render::{
     RenderedCompactedHistoryInfo, RenderedImage, RenderedImageAnchor, RenderedImageSource,
     RenderedMessage, has_rendered_images, is_attached_image_label_text, render_images,
@@ -177,6 +181,10 @@ pub struct Session {
     /// Optional user-provided label for saved sessions
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub save_label: Option<String>,
+    /// Preview of the last visible text message, refreshed on every save so
+    /// listings can show it from the startup stub without loading messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_preview: Option<StoredMessagePreview>,
     /// Environment snapshots for post-mortem debugging
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_snapshots: Vec<EnvSnapshot>,
@@ -253,6 +261,8 @@ struct SessionStartupStub {
     saved: bool,
     #[serde(default)]
     save_label: Option<String>,
+    #[serde(default)]
+    last_message_preview: Option<StoredMessagePreview>,
 }
 
 const MAX_SESSION_JOURNAL_BYTES: u64 = 512 * 1024;
@@ -347,6 +357,7 @@ impl Session {
         session.is_debug = stub.is_debug;
         session.saved = stub.saved;
         session.save_label = stub.save_label;
+        session.last_message_preview = stub.last_message_preview;
         session.messages.clear();
         session.env_snapshots.clear();
         session.memory_injections.clear();
@@ -520,6 +531,7 @@ impl Session {
             is_debug: self.is_debug,
             saved: self.saved,
             save_label: self.save_label.clone(),
+            last_message_preview: self.last_message_preview.clone(),
         }
     }
 
@@ -722,6 +734,7 @@ impl Session {
         self.is_debug = meta.is_debug;
         self.saved = meta.saved;
         self.save_label = meta.save_label;
+        self.last_message_preview = meta.last_message_preview;
         self.mark_memory_profile_dirty();
     }
 
@@ -763,6 +776,7 @@ impl Session {
             is_debug,
             saved: false,
             save_label: None,
+            last_message_preview: None,
             env_snapshots: Vec::new(),
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
@@ -818,6 +832,7 @@ impl Session {
             is_debug,
             saved: false,
             save_label: None,
+            last_message_preview: None,
             env_snapshots: Vec::new(),
             memory_injections: Vec::new(),
             replay_events: Vec::new(),

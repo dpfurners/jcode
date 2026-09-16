@@ -525,6 +525,69 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() -> Result<()> 
     assert!(stub.env_snapshots.is_empty());
     assert!(stub.memory_injections.is_empty());
     assert!(stub.replay_events.is_empty());
+    let preview = stub
+        .last_message_preview
+        .as_ref()
+        .expect("stub carries last message preview");
+    assert_eq!(preview.role, Role::User);
+    assert_eq!(preview.text, "hello world");
+
+    // A journal-only append must refresh the stub preview without a checkpoint.
+    let mut session = Session::load(session_id)?;
+    session.append_stored_message(StoredMessage {
+        id: "msg_2".to_string(),
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "<system-reminder>hidden</system-reminder>{}",
+                "reply ".repeat(100)
+            ),
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp: Some(Utc::now()),
+        tool_duration_ms: None,
+        token_usage: None,
+    });
+    session.save()?;
+    assert!(session_journal_path(session_id)?.exists());
+    let stub = Session::load_startup_stub(session_id)?;
+    let preview = stub.last_message_preview.expect("journal preview");
+    assert_eq!(preview.role, Role::Assistant);
+    assert!(!preview.text.contains("system-reminder"));
+    assert!(preview.text.starts_with("reply reply"));
+    assert_eq!(preview.text.chars().count(), MESSAGE_PREVIEW_MAX_CHARS + 1);
+    assert!(preview.text.ends_with('…'));
+    Ok(())
+}
+
+#[test]
+fn load_startup_stub_without_preview_field_yields_none() -> Result<()> {
+    let _env_lock = lock_env();
+    let temp_home = tempfile::Builder::new()
+        .prefix("jcode-startup-stub-legacy-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+    let session_id = "session_legacy_stub";
+    let path = session_path(session_id)?;
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "id": session_id,
+            "parent_id": null,
+            "title": "legacy",
+            "created_at": Utc::now(),
+            "updated_at": Utc::now(),
+            "messages": [{"id": "m", "role": "user", "content": [{"type": "text", "text": "old"}]}]
+        })
+        .to_string(),
+    )?;
+    let stub = Session::load_startup_stub(session_id)?;
+    assert!(stub.last_message_preview.is_none());
+    let full = Session::load(session_id)?;
+    assert_eq!(full.messages.len(), 1);
     Ok(())
 }
 
