@@ -804,6 +804,18 @@ pub(super) async fn handle_client(
                 if delivered == 0 {
                     let _ = client_event_tx.send(info.to_event());
                 }
+                if crate::config::config().notifications.remote {
+                    let short_name = swarm_members
+                        .read()
+                        .await
+                        .get(&session_id)
+                        .and_then(|member| member.friendly_name.clone())
+                        .or_else(|| {
+                            crate::id::extract_session_name(&session_id).map(str::to_string)
+                        })
+                        .unwrap_or_else(|| session_id.clone());
+                    crate::remote_push::notify_needs_input(&session_id, &short_name);
+                }
             }
         })
     };

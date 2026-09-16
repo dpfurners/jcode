@@ -778,6 +778,7 @@ impl Server {
             version: jcode_build_meta::version().to_string(),
         };
         crate::process_title::set_server_title(&identity.name);
+        crate::remote_push::set_server_name(&identity.name);
 
         // Initialize the background runner even when ambient mode is disabled so
         // session-targeted scheduled tasks still have a live delivery loop.

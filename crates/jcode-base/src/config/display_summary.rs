@@ -131,6 +131,7 @@ impl Config {
 - Telegram replies: {}
 - Discord: {}
 - Discord replies: {}
+- Remote interactive push: {}
 
 *Edit the config file or set environment variables to customize.*
 *Environment variables (e.g., `JCODE_SCROLL_UP_KEY`, `JCODE_GATEWAY_ENABLED`) override file settings.*"#,
@@ -375,6 +376,14 @@ impl Config {
                 "enabled"
             } else {
                 "disabled"
+            },
+            if self.notifications.remote {
+                format!(
+                    "enabled (turn_end >= {}s)",
+                    self.notifications.remote_turn_min_secs
+                )
+            } else {
+                "disabled".to_string()
             },
         )
     }

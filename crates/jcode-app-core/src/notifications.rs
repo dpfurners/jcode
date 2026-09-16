@@ -57,7 +57,7 @@ pub struct MacosNotificationEnvelope {
 }
 
 /// Notification priority levels (maps to ntfy priority header).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Priority {
     /// Routine cycle summaries
     Default,
@@ -192,6 +192,20 @@ impl NotificationDispatcher {
         );
     }
 
+    /// Push a short interactive-session notification (needs input, turn
+    /// failed, long turn finished). `body` is used for every channel because
+    /// it is already private-safe. ntfy additionally gets a `Click` header
+    /// with `click_url` when provided.
+    pub fn send_interactive(
+        &self,
+        title: &str,
+        body: &str,
+        priority: Priority,
+        click_url: Option<&str>,
+    ) {
+        self.send_all_inner(title, body, body, priority, None, None, click_url);
+    }
+
     /// Like `send_all`, but with an optional pre-built HTML body for the email channel.
     /// When `email_html_override` is Some, it's used directly as the email body instead
     /// of converting `detailed_body` through `markdown_to_html_email`.
@@ -203,6 +217,28 @@ impl NotificationDispatcher {
         priority: Priority,
         cycle_id: Option<&str>,
         email_html_override: Option<&str>,
+    ) {
+        self.send_all_inner(
+            title,
+            safe_body,
+            detailed_body,
+            priority,
+            cycle_id,
+            email_html_override,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn send_all_inner(
+        &self,
+        title: &str,
+        safe_body: &str,
+        detailed_body: &str,
+        priority: Priority,
+        cycle_id: Option<&str>,
+        email_html_override: Option<&str>,
+        click_url: Option<&str>,
     ) {
         // Guard: only dispatch if inside a tokio runtime
         if tokio::runtime::Handle::try_current().is_err() {
@@ -216,8 +252,11 @@ impl NotificationDispatcher {
             let url = format!("{}/{}", self.config.ntfy_server, topic);
             let title = title.to_string();
             let body = safe_body.to_string();
+            let click_url = click_url.map(str::to_string);
             tokio::spawn(async move {
-                if let Err(e) = send_ntfy(&client, &url, &title, &body, priority).await {
+                if let Err(e) =
+                    send_ntfy(&client, &url, &title, &body, priority, click_url.as_deref()).await
+                {
                     logging::error(&format!("ntfy notification failed: {}", e));
                 }
             });
@@ -285,21 +324,25 @@ impl NotificationDispatcher {
 // ntfy.sh
 // ---------------------------------------------------------------------------
 
+/// `click_url`, when given, becomes ntfy's `Click` header (opened when the
+/// notification is tapped).
 async fn send_ntfy(
     client: &reqwest::Client,
     url: &str,
     title: &str,
     body: &str,
     priority: Priority,
+    click_url: Option<&str>,
 ) -> anyhow::Result<()> {
-    let resp = client
+    let mut request = client
         .post(url)
         .header("Title", title)
         .header("Priority", priority.ntfy_value())
-        .header("Tags", priority.ntfy_tags())
-        .body(body.to_string())
-        .send()
-        .await?;
+        .header("Tags", priority.ntfy_tags());
+    if let Some(click_url) = click_url {
+        request = request.header("Click", click_url);
+    }
+    let resp = request.body(body.to_string()).send().await?;
 
     if !resp.status().is_success() {
         let status = resp.status();

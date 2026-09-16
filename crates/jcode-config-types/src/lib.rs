@@ -1376,6 +1376,15 @@ pub struct NotificationsConfig {
     /// (e.g. "Glass", "Ping", "Hero"). Empty string disables the sound.
     /// Ignored on non-macOS platforms. Default: "Glass".
     pub turn_complete_sound: String,
+    /// Push interactive session events (needs input, turn failed, long turn
+    /// finished) through the `[safety]` channels (ntfy/email/chat) so a phone
+    /// can be notified. Bodies never include the prompt or assistant text.
+    /// (default: false)
+    pub remote: bool,
+    /// Minimum successful-turn duration, in seconds, before a remote
+    /// "finished" push fires. Errors and input requests always push.
+    /// (default: 60)
+    pub remote_turn_min_secs: u64,
 }
 
 impl Default for NotificationsConfig {
@@ -1386,6 +1395,8 @@ impl Default for NotificationsConfig {
             turn_complete_todo_min_secs: 30,
             turn_complete_only_when_unfocused: true,
             turn_complete_sound: "Glass".to_string(),
+            remote: false,
+            remote_turn_min_secs: 60,
         }
     }
 }

@@ -563,6 +563,15 @@ swarm_max_concurrent_agents = 32
 # macOS Notification Center sound played on completion (e.g. "Glass", "Ping",
 # "Hero"). Empty string disables the sound. Ignored on non-macOS. (default: "Glass")
 # turn_complete_sound = "Glass"
+#
+# Push interactive session events (needs input / turn failed / long turn
+# finished) through the [safety] channels (ntfy, email, chat). Bodies are short
+# and never include the prompt or assistant text. ntfy gets a Click deep link
+# (jcode://session?host=<hostname -s>&id=<session_id>). (default: false)
+# remote = false
+# Minimum successful-turn duration before a remote "finished" push fires.
+# Errors and input requests always push. (default: 60)
+# remote_turn_min_secs = 60
 
 [hooks]
 # Lifecycle hooks: external commands jcode runs at well-defined points so other

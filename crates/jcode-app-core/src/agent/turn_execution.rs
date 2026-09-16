@@ -105,6 +105,7 @@ impl Agent {
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.current_turn_system_reminder = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
+        self.fire_remote_turn_end_push(&result, turn_started_at);
         result
     }
 
@@ -195,6 +196,23 @@ impl Agent {
 
     /// Fire the `turn_end` observer hook with turn outcome metadata.
     /// No-op (without building the payload) when the hook is not configured.
+    /// `[notifications] remote`: push a short turn-end summary to the phone.
+    fn fire_remote_turn_end_push(&self, result: &Result<()>, started_at: Instant) {
+        if !crate::config::config().notifications.remote {
+            return;
+        }
+        let error_text = result.as_ref().err().map(|error| error.to_string());
+        crate::remote_push::notify_turn_end(
+            &self.session.id,
+            self.session.display_name(),
+            match error_text.as_deref() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            },
+            started_at.elapsed(),
+        );
+    }
+
     fn fire_turn_end_hook(
         &self,
         result: &Result<()>,
