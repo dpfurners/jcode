@@ -148,6 +148,29 @@ private func event(_ line: String) -> ConnectionOutput {
     #expect(!ours.isAdoptedTurn)
 }
 
+/// The daemon ends the assistant message when the model stops to call a
+/// tool, then reports tool_exec/tool_done for a call whose entry is no
+/// longer streaming. Both must land on that call, not open a second row.
+@Test func toolResultAfterMessageEndLandsOnTheSameEntry() {
+    let state = run([
+        event(#"{"type":"tool_start","id":"t1","name":"bash"}"#),
+        event(#"{"type":"tool_input","delta":"{}"}"#),
+        event(#"{"type":"message_end"}"#),
+        event(#"{"type":"tool_exec","id":"t1","name":"bash"}"#),
+        event(#"{"type":"tool_done","id":"t1","name":"bash","output":"got:x"}"#),
+        event(#"{"type":"text_delta","text":"mango"}"#),
+        event(#"{"type":"message_end"}"#),
+        event(#"{"type":"done"}"#),
+    ])
+    let assistants = state.transcript.filter { $0.role == .assistant }
+    #expect(assistants.count == 2)
+    #expect(assistants[0].toolCalls.count == 1)
+    #expect(assistants[0].toolCalls[0].status == .succeeded)
+    #expect(assistants[0].toolCalls[0].output == "got:x")
+    #expect(assistants[1].toolCalls.isEmpty)
+    #expect(assistants[1].text == "mango")
+}
+
 @Test func toolFailureRecorded() {
     let state = run([
         event(#"{"type":"tool_start","id":"t1","name":"bash"}"#),
