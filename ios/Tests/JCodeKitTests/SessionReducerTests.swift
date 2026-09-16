@@ -171,6 +171,18 @@ private func event(_ line: String) -> ConnectionOutput {
     #expect(assistants[1].text == "mango")
 }
 
+/// History inlines reasoning into assistant text as `*\u{2063}…\u{2063}*` lines;
+/// the fold splits them back into the entry's reasoning.
+@Test func historySplitsInlinedReasoningOutOfAssistantText() {
+    let inlined = "*\u{2063}Think first\u{2063}*  \n\n\n\nmango"
+    let payload = #"{"type":"history","id":1,"session_id":"s1","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"REPLACE"}]}"#
+        .replacingOccurrences(of: "REPLACE", with: inlined.replacingOccurrences(of: "\n", with: "\\n"))
+    let state = run([event(payload)])
+    let assistant = state.transcript.last { $0.role == .assistant }
+    #expect(assistant?.text == "mango")
+    #expect(assistant?.reasoning == "Think first")
+}
+
 @Test func toolFailureRecorded() {
     let state = run([
         event(#"{"type":"tool_start","id":"t1","name":"bash"}"#),

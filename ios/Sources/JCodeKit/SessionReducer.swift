@@ -512,11 +512,18 @@ public enum SessionReducer {
                     .init(id: name, name: name, status: .succeeded)
                 }
             }
+            // History inlines persisted reasoning into the assistant text as
+            // sentinel-marked emphasis lines; split it back out so a reopened
+            // session shows thinking in the same disclosure as a live one
+            // (and so the transcript matches what the macOS client shows).
+            let (text, reasoning) = role == .assistant
+                ? ReasoningMarkup.split(content: message.content)
+                : (message.content, "")
             // Skip empty assistant placeholders.
-            if message.content.isEmpty && toolCalls.isEmpty {
+            if text.isEmpty && reasoning.isEmpty && toolCalls.isEmpty {
                 return nil
             }
-            return TranscriptEntry(role: role, text: message.content, toolCalls: toolCalls)
+            return TranscriptEntry(role: role, text: text, reasoning: reasoning, toolCalls: toolCalls)
         }
         return state
     }
