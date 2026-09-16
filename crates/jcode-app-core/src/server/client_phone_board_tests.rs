@@ -41,16 +41,10 @@ struct IsolatedHome {
     prev_runtime: Option<std::ffi::OsString>,
     _home: tempfile::TempDir,
     _runtime: tempfile::TempDir,
-    /// Process-wide env lock, held for the whole test: `JCODE_HOME` is a
-    /// process global, and a sibling test that reads skills or config
-    /// while this one points it at a temp dir sees the wrong tree
-    /// (found: the inline-skill test listed the machine's real skills).
-    _env: std::sync::MutexGuard<'static, ()>,
 }
 
 impl IsolatedHome {
     fn new() -> Self {
-        let env = crate::storage::lock_test_env();
         let home = tempfile::TempDir::new().expect("jcode home");
         let runtime = tempfile::TempDir::new().expect("runtime dir");
         let prev_home = std::env::var_os("JCODE_HOME");
@@ -62,7 +56,6 @@ impl IsolatedHome {
             prev_runtime,
             _home: home,
             _runtime: runtime,
-            _env: env,
         }
     }
 }

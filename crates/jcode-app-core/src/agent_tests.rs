@@ -2298,6 +2298,16 @@ async fn inline_skill_mentions_reach_the_provider_system_prompt() {
     let systems = capturing.systems.clone();
     let provider: Arc<dyn Provider> = Arc::new(capturing);
     let registry = Registry::new(provider.clone()).await;
+    // Reload the shared registry under the temp home: a Registry built by an
+    // earlier test in this process cached the real machine's skills, and the
+    // cfg(test) shared_registry() hands every Registry::new a fresh snapshot
+    // only when nothing is cached yet.
+    registry
+        .skills()
+        .write()
+        .await
+        .reload_global()
+        .expect("reload skills from the temp home");
     let mut agent = Agent::new(provider, registry);
     assert!(
         agent
