@@ -99,6 +99,42 @@ pub enum Request {
     #[serde(rename = "state")]
     GetState { id: u64 },
 
+    /// List sessions known to this daemon (live and on-disk). Allowed on a
+    /// bare connection before `subscribe`; never creates a session.
+    #[serde(rename = "list_sessions")]
+    ListSessions {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        include_workers: bool,
+    },
+
+    /// Close (and optionally delete) a session the caller may not be
+    /// attached to. Cancels a live turn and unloads the agent.
+    #[serde(rename = "close_session")]
+    CloseSession {
+        id: u64,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        delete: bool,
+    },
+
+    /// Fuzzy file search under a working dir, or absolute path completion
+    /// when `query` starts with `/`. Allowed pre-subscribe when
+    /// `working_dir` is given.
+    #[serde(rename = "search_files")]
+    SearchFiles {
+        id: u64,
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        dirs_only: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
+    },
+
     /// Execute a debug command (debug socket only)
     #[serde(rename = "debug_command")]
     DebugCommand {
@@ -748,6 +784,89 @@ pub enum Request {
 }
 
 /// Server event sent to client
+/// A pending stdin prompt attached to a session (see `list_sessions`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPromptInfo {
+    pub request_id: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_password: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// Short transcript preview for a session row. `kind` is one of
+/// `prompt`, `streaming`, `assistant`, `user`. `text` is at most 240 chars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewInfo {
+    pub kind: String,
+    pub text: String,
+}
+
+/// One session in a `sessions` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRow {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
+    /// `custom_title ?? title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// `needs_you` | `failed` | `running` | `idle`.
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_started_at: Option<String>,
+    #[serde(default)]
+    pub queued: usize,
+    /// Always serialised (null when nothing waits) so clients can rely on
+    /// the key being present.
+    #[serde(default)]
+    pub pending_prompt: Option<PendingPromptInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewInfo>,
+    #[serde(default)]
+    pub client_count: usize,
+    #[serde(default)]
+    pub is_live: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// `coordinator` | `worker` | null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm_role: Option<String>,
+}
+
+/// Distinct working directory seen across listed sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentProject {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
+    #[serde(default)]
+    pub session_count: usize,
+}
+
+/// One hit in a `file_matches` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileMatch {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_dir: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[expect(
@@ -1101,6 +1220,33 @@ pub enum ServerEvent {
     /// Server requests that this client/session close itself.
     #[serde(rename = "session_close_requested")]
     SessionCloseRequested { reason: String },
+
+    /// Response to `list_sessions`.
+    #[serde(rename = "sessions")]
+    Sessions {
+        id: u64,
+        server_name: String,
+        server_icon: String,
+        server_version: String,
+        sessions: Vec<SessionRow>,
+        recent_projects: Vec<RecentProject>,
+    },
+
+    /// Response to `close_session`.
+    #[serde(rename = "session_closed")]
+    SessionClosed {
+        id: u64,
+        session_id: String,
+        deleted: bool,
+    },
+
+    /// Response to `search_files`.
+    #[serde(rename = "file_matches")]
+    FileMatches {
+        id: u64,
+        query: String,
+        matches: Vec<FileMatch>,
+    },
 
     /// Session display title changed.
     #[serde(rename = "session_renamed")]
